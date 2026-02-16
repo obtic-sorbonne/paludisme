@@ -5,6 +5,7 @@ __pycache__/
 
 # Data Protection
 2007/
+data_sample/
 data/
 *.csv
 *.xlsx
