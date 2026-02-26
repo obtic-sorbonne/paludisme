@@ -1,12 +1,13 @@
 """
 OCR module — extract text from scanned PDFs using Docling + EasyOCR (French).
 
-Does not go recursively through subfolders, but can process multiple PDFs in a single folder. 
-To process subfolders recursively, run pipeline.py
+Uses iterate_items() instead of export_to_text() to get clean plain text
+without markdown artifacts (##, &amp;, etc.). Tables are flattened to
+tab-separated rows for anonymization; the structured DoclingDocument is
+preserved for future variable extraction.
 
 Usage standalone:
-    python path/ocr.py /path/to/pdf_folder /path/to/output
-    python path/ocr.py /path/to/single_file.pdf /path/to/output --gpu
+    python anonymisation/ocr.py /path/to/pdf_folder /path/to/output --gpu
 
 Requirements:
     pip install docling easyocr
@@ -30,6 +31,7 @@ from docling.datamodel.accelerator_options import (
     AcceleratorOptions,
 )
 from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling_core.types.doc import TextItem, TableItem
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +48,9 @@ def _build_converter(
     """
     Build a Docling converter optimised for French scanned medical PDFs.
 
-    - EasyOCR with lang=["fr"] (not the default RapidOCR which uses Chinese models)
+    - EasyOCR with lang=["fr"] (French recognition model)
     - force_full_page_ocr=True — all pages are scanned images
-    - do_table_structure=True — preserves layout of lab results
+    - do_table_structure=True — preserves layout of lab results for future extraction
     - GPU via CUDA when available on server
 
     For air-gapped use:
@@ -59,7 +61,6 @@ def _build_converter(
     ocr_options = EasyOcrOptions(
         lang=["fr"],
         force_full_page_ocr=True,
-        use_gpu=False,  # deprecated field — GPU is controlled by accelerator_options below
     )
 
     if use_gpu:
@@ -101,15 +102,49 @@ def _get_converter(
     return _converter
 
 
+def _doc_to_text(doc) -> str:
+    """
+    Extract clean plain text from a DoclingDocument using iterate_items().
+
+    Unlike export_to_text() which leaks markdown (## headers, &amp; entities),
+    this iterates over typed items directly:
+      - TextItem: plain .text attribute (no markdown)
+      - TableItem: cells flattened as tab-separated rows
+
+    This gives us artifact-free text for anonymization while preserving
+    the structured DoclingDocument for future table/variable extraction.
+    """
+    parts = []
+    for item, _level in doc.iterate_items():
+        if isinstance(item, TextItem):
+            text = item.text.strip()
+            if text:
+                parts.append(text)
+        elif isinstance(item, TableItem):
+            # Flatten table to readable rows for anonymization
+            if hasattr(item, "data") and item.data and hasattr(item.data, "table_cells"):
+                rows = {}
+                for cell in item.data.table_cells:
+                    row_idx = cell.start_row_offset_idx
+                    if row_idx not in rows:
+                        rows[row_idx] = []
+                    rows[row_idx].append(cell.text.strip())
+                for row_idx in sorted(rows):
+                    row_text = "\t".join(rows[row_idx])
+                    if row_text.strip():
+                        parts.append(row_text)
+    return "\n\n".join(parts)
+
+
 def pdf_to_text(
     pdf_path: Path,
     use_gpu: bool = False,
     artifacts_path: str = None,
 ) -> str:
-    """Extract text from a single PDF."""
+    """Extract clean text from a single PDF."""
     converter = _get_converter(use_gpu=use_gpu, artifacts_path=artifacts_path)
     result = converter.convert(str(pdf_path))
-    return result.document.export_to_text()
+    return _doc_to_text(result.document)
 
 
 def process_folder(
@@ -120,7 +155,7 @@ def process_folder(
 ) -> dict[str, str]:
     """
     OCR all PDFs in a folder.
-    Returns: {filename: extracted_text}
+    Returns: {filename: clean_text}
     """
     pdf_files = sorted(
         f for f in folder.iterdir() if f.suffix in extensions and f.is_file()
@@ -131,7 +166,7 @@ def process_folder(
         logger.info(f"OCR: {pdf.name}")
         try:
             result = converter.convert(str(pdf))
-            text = result.document.export_to_text()
+            text = _doc_to_text(result.document)
             results[pdf.name] = text
             logger.info(f"  → {len(text)} chars extracted")
         except Exception as e:
