@@ -24,12 +24,20 @@ STRUCTURED_PII = {
     ],
     "IDENTIFIANT": [
         r"NPI\s*:?\s*(\d{8,15})",
-        r"(IP\d{5,10})",
+        r"([I1l]P\d{5,10})",
         r"N[°o]?\s*de\s+séjour\s*:?\s*(\d{5,15})",
         r"NDA\s*:?\s*(\d{5,15})",
+        # Barcode format: *DIGITS* or *DIGITS_DIGITS*
+        r"\*(\d{10,15}[_\d]*)\*",
+        # Standalone 10+ digit number NOT preceded by phone keyword (hospital ID)
+        r"(?<!\d)(\d{10,15})(?!\d)",
     ],
     "TELEPHONE": [
-        r"\b(0[1-9][\s.\-]?\d{2}[\s.\-]?\d{2}[\s.\-]?\d{2}[\s.\-]?\d{2})\b",
+        # Phone WITH separators (spaces/dots/hyphens) — always a phone
+        r"\b(0[1-9][\s.\-]\d{2}[\s.\-]\d{2}[\s.\-]\d{2}[\s.\-]\d{2})\b",
+        # Phone WITHOUT separators — only if preceded by phone context keyword
+        # (avoids matching hospital barcodes/NPIs like 0502040015)
+        r"(?:Tel|Tél|Fax|Télécopie|téléphone|téléphon)[^\n]{0,10}?(0[1-9]\d{8})\b",
     ],
     "EMAIL": [
         r"\b([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)\b",
@@ -53,54 +61,138 @@ def find_structured_pii(text: str) -> list[tuple[str, str, int, int]]:
     """
     Scan text for structured PII.
     Returns list of (pii_type, matched_text, start, end).
+
+    Processing order matters for disambiguation:
+      1. NIR (social security — very specific format)
+      2. TELEPHONE (formatted numbers or phone-context numbers)
+      3. IDENTIFIANT (NPI, IP, barcode, standalone digit sequences)
+      4. EMAIL
+      5. ADRESSE
+
+    Overlap detection: once a span is matched, later patterns skip it.
+    This prevents e.g. "Tel.: 0148207966" being caught as both TELEPHONE
+    and IDENTIFIANT.
     """
     hits = []
-    for pii_type, patterns in STRUCTURED_PII.items():
+    matched_spans = []  # list of (start, end) tuples
+
+    def _overlaps(start: int, end: int) -> bool:
+        for s, e in matched_spans:
+            if start < e and end > s:  # any overlap
+                return True
+        return False
+
+    priority_order = ["NIR", "TELEPHONE", "IDENTIFIANT", "EMAIL", "ADRESSE"]
+    for pii_type in priority_order:
+        patterns = STRUCTURED_PII.get(pii_type, [])
         for pattern in patterns:
             flags = re.MULTILINE if pattern.startswith("^") else 0
             for match in re.finditer(pattern, text, flags):
                 captured = match.group(1) if match.lastindex else match.group(0)
                 start = match.start(1) if match.lastindex else match.start(0)
                 end = match.end(1) if match.lastindex else match.end(0)
+                if _overlaps(start, end):
+                    continue
                 hits.append((pii_type, captured, start, end))
+                matched_spans.append((start, end))
     return hits
 
 
 # ---------------------------------------------------------------------------
 # 2. Other-people detection (doctors, staff, family)
+#
+# Strategy: high-precision regex anchored to role keywords (Dr, Pr, Interne,
+# Copie à, Validé par, CCA). These contexts reliably indicate person names.
+# spaCy NER is used only as a supplement with strict structural validation,
+# because French NER on OCR'd medical text produces many false positives
+# (drug names, lab terms, OCR garbage).
 # ---------------------------------------------------------------------------
 
 PERSON_PATTERNS = [
-    # "Dr/Pr Firstname LASTNAME"
-    r"(?:Dr|Pr|Professeur|Docteur)\.?\s+([A-ZÀ-Ü][a-zà-ÿ]+\s+[A-ZÀ-Ü][A-ZÀ-Ü\s]+?)(?=\s*[,;\n.\-]|\s+(?:PH|CCA|PU|MCU)|\s+\-|\s*$)",
-    # "Dr LASTNAME"
-    r"(?:Dr|Pr|Professeur|Docteur)\.?\s+([A-ZÀ-Ü][A-ZÀ-Ü]{2,})(?=\s*[,;\n.\-]|\s+(?:PH|CCA|PU|MCU)|\s+\-|\s*$)",
-    # "Interne(s) : LASTNAME, Firstname"
-    r"[Ii]nterne(?:s)?\s*(?:\(s\))?\s*:?\s*([A-ZÀ-Ü][A-ZÀ-Ü]+,\s*[A-ZÀ-Ü][a-zà-ÿ]+)",
-    # "Copie à : LASTNAME, FIRSTNAME"
-    r"[Cc]opie\s+[àa]\s*:\s*([A-ZÀ-Ü][A-ZÀ-Ü]+,\s*[A-ZÀ-Ü]+)",
-    # "Validé par: Dr. LASTNAME, Firstname"
-    r"[Vv]alid[ée]\s+par\s*:?\s*(?:Dr\.?\s+)?([A-ZÀ-Ü][A-ZÀ-Ü]+,?\s*[A-ZÀ-Ü]?[a-zà-ÿ]*)",
+    # "Dr/Pr Firstname LASTNAME" — requires explicit title prefix
+    r"(?:Dr|Pr|Professeur|Docteur)\.?\s+([A-ZÀ-Ü][a-zà-ÿ]+\s+(?:DE\s+(?:LOS\s+)?)?[A-ZÀ-Ü][A-ZÀ-Ü]{2,})(?=\s*[,;\n.\-]|\s+(?:PH|CCA|PU|MCU)|\s*$)",
+    # "Dr LASTNAME" (no firstname) — must be 3+ uppercase letters
+    r"(?:Dr|Pr|Professeur|Docteur)\.?\s+([A-ZÀ-Ü]{3,})(?=\s*[,;\n.\-]|\s+(?:PH|CCA|PU|MCU)|\s*$)",
+    # "Interne(s) : LASTNAME, Firstname" — requires role prefix
+    r"[Ii]nterne(?:s)?\s*(?:\(s\))?\s*:?\s*([A-ZÀ-Ü]{3,},\s*[A-ZÀ-Ü][a-zà-ÿ]+)",
+    # "Copie à: LASTNAME, FIRSTNAME" — requires "Copie à" prefix
+    r"[Cc]opie\s+[àa]\s*:?\s*([A-ZÀ-Ü]{3,},\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+)",
+    # "Validé par: Dr. LASTNAME, Firstname" — requires explicit name after "par"
+    r"[Vv]alid[ée]\s+par\s*:?\s*(?:Dr\.?\s+)?([A-ZÀ-Ü]{3,},\s*[A-ZÀ-Ü][a-zà-ÿ]+)",
     # "CCA : Dr Firstname LASTNAME"
-    r"CCA\s*:\s*(?:Dr\.?\s+)?([A-ZÀ-Ü][a-zà-ÿ]+\s+[A-ZÀ-Ü][A-ZÀ-Ü]+)",
+    r"CCA\s*:\s*(?:Dr\.?\s+)?([A-ZÀ-Ü][a-zà-ÿ]+\s+[A-ZÀ-Ü]{3,})",
     # "dr017215:DELGADO, David" (urgences timestamps)
-    r"dr\d+\s*:\s*([A-ZÀ-Ü][A-ZÀ-Ü]+,\s*[A-ZÀ-Ü][a-zà-ÿ]+)",
-    # "En accord avec Jean Yves"
-    r"[Ee]n\s+accord\s+avec\s+([A-ZÀ-Ü][a-zà-ÿ]+(?:\s+[A-ZÀ-Ü][a-zà-ÿ]+)?)",
-    # "Pr Firstname LASTNAME"
-    r"\bPr\s+([A-ZÀ-Ü][a-zà-ÿ]+\s+[A-ZÀ-Ü][A-ZÀ-Ü]+)",
+    r"dr\d+\s*:\s*([A-ZÀ-Ü]{3,},\s*[A-ZÀ-Ü][a-zà-ÿ]+)",
+    # "En accord avec Firstname Lastname"
+    r"[Ee]n\s+accord\s+avec\s+([A-ZÀ-Ü][a-zà-ÿ]{2,}(?:\s+[A-ZÀ-Ü][a-zà-ÿ]{2,})?)",
 ]
 
-# Medical terms / place names that NER or regex might wrongly tag as persons
+# Known false positives — drug names and terms that structurally resemble names.
+# Keep this minimal: structural validation handles most cases.
 FALSE_POSITIVES = {
+    # Drugs (various OCR spellings)
     "QUININE", "MALARONE", "DOLIPRANE", "NIVAQUINE", "FLAGYL", "CLAMOXYL",
-    "ZYTHROMAX", "EMLA", "ADVIL", "PLASMODIUM", "GLASGOW",
-    "ROBERT", "FONTAINE",
+    "ZYTHROMAX", "ZITHROMAX", "EMLA", "ADVIL", "CLAMOXYLET",
+    # Medical/scientific terms that look like names
+    "PLASMODIUM", "GLASGOW", "SHIGELLA",
+    # Hospital name parts (also valid lastnames — but in this context, not people)
+    "ROBERT", "FONTAINE", "DEBRÉ", "DEBRE",
+    # Medical department terms that spaCy/regex tag as person names
+    "DIABÉTOLOGIE", "DIABETOLOGIE", "PÉDIATRIQUE", "PEDIATRIQUE",
+    "ENDOCRINOLOGIE", "HEMATOLOGIE", "HÉMATOLOGIE",
 }
 
 
 def _normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip())
+
+
+def _is_plausible_name(name: str) -> bool:
+    """
+    Structural validation: does this string look like a person's name?
+
+    Filters out OCR garbage, medical terms, abbreviations, and common
+    French words that NER or loose regex might tag as person names.
+    """
+    # Must contain only letters, spaces, hyphens, commas, apostrophes
+    if re.search(r"[0-9_.@/\\:;(){}]", name):
+        return False
+
+    # Reject strings containing dots (lab values like "Conc.corp.moy")
+    if "." in name:
+        return False
+
+    tokens = [t for t in name.replace(",", " ").split() if t]
+
+    if not tokens:
+        return False
+
+    # Every token must be at least 2 characters
+    if any(len(t) < 2 for t in tokens):
+        return False
+
+    # Need at least one token of 4+ letters
+    if not any(len(t) >= 4 for t in tokens):
+        return False
+
+    # Single-word: must be all-uppercase and 4+ chars (e.g. "SIRIEZ" from "Dr SIRIEZ").
+    # Reject single titlecase words — they're almost always medical terms
+    # (Cutané, Lipemie, Zithromax, Clamoxylet, Tenfant, Lenfant, Urbain...).
+    if len(tokens) == 1:
+        word = tokens[0]
+        if not word.isupper():
+            return False
+        if len(word) < 4:
+            return False
+
+    # Multi-word: reject if any token is all-lowercase (catches "Shigella flexneri",
+    # "cellulaires sur lame" etc. — real names always start with uppercase)
+    if len(tokens) > 1:
+        for t in tokens:
+            if t.islower():
+                return False
+
+    return True
 
 
 def find_other_people(
@@ -115,30 +207,46 @@ def find_other_people(
     """
     found = []
 
-    # Regex-based detection
+    # --- Regex-based detection (high precision, anchored to role keywords) ---
     for pattern in PERSON_PATTERNS:
         for match in re.finditer(pattern, text, re.MULTILINE):
             name = _normalize(match.group(1))
-            tokens_upper = {t.upper() for t in name.split()}
+            tokens_upper = {t.upper() for t in name.replace(",", " ").split()}
             if tokens_upper & patient_tokens:
                 continue
             if tokens_upper & FALSE_POSITIVES:
                 continue
+            if not _is_plausible_name(name):
+                continue
             found.append(name)
 
-    # spaCy NER detection (optional)
+    # --- spaCy NER (supplement only, strict filtering) ---
+    # French NER on OCR'd medical text is very noisy: drug names, bacteria,
+    # lab terms, OCR artifacts all get tagged as PER. We only accept spaCy
+    # matches that look structurally like "Firstname LASTNAME" or "LASTNAME".
     if use_spacy and nlp is not None:
+        # Name must match: "Firstname LASTNAME" or "LASTNAME, Firstname"
+        # with minimum 3 chars per word (filters "Hep Li", "Réa Debré" etc.)
+        name_structure = re.compile(
+            r"^[A-ZÀ-Ü][a-zà-ÿ]{2,}\s+(?:DE\s+(?:LOS\s+)?)?[A-ZÀ-Ü]{3,}$"   # Firstname LASTNAME
+            r"|^[A-ZÀ-Ü]{3,},\s*[A-ZÀ-Ü][a-zà-ÿ]{2,}$"                        # LASTNAME, Firstname
+            r"|^[A-ZÀ-Ü][a-zà-ÿ]{2,}\s+[A-ZÀ-Ü][a-zà-ÿ]{2,}$"                # Firstname Lastname
+        )
         doc = nlp(text)
         for ent in doc.ents:
-            if ent.label_ == "PER":
-                name = _normalize(ent.text)
-                tokens_upper = {t.upper() for t in name.split()}
-                if tokens_upper & patient_tokens:
-                    continue
-                if tokens_upper & FALSE_POSITIVES:
-                    continue
-                if len(name) >= 3:
-                    found.append(name)
+            if ent.label_ != "PER":
+                continue
+            name = _normalize(ent.text)
+            if not name_structure.match(name):
+                continue
+            tokens_upper = {t.upper() for t in name.replace(",", " ").split()}
+            if tokens_upper & patient_tokens:
+                continue
+            if tokens_upper & FALSE_POSITIVES:
+                continue
+            if not _is_plausible_name(name):
+                continue
+            found.append(name)
 
     # Deduplicate, longest first
     seen = set()
