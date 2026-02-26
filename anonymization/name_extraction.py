@@ -19,13 +19,19 @@ logger = logging.getLogger(__name__)
 
 
 # Regex patterns targeting structured patient name fields.
-# Each captures the full name string (possibly with comma separator).
+# Input is clean text from iterate_items() (no markdown artifacts).
+# Apostrophe may still be missing from OCR at the character level.
 HEADER_PATTERNS = [
-    r"de\s+l[''']enfant\s+([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
+    # "de l'enfant LASTNAME, FIRSTNAME" (apostrophe may be missing from OCR)
+    r"de\s+l[''']?enfant\s+([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
+    # "Nom patient  LASTNAME, FIRSTNAME"
     r"Nom\s+patient\s+([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
+    # "Patient : LASTNAME, FIRSTNAME" — same line
     r"Patient\s*:\s*([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
-    # Urgences IP block: lastname on one line, firstname on next
-    r"IP\d+\s*\n\s*([A-ZÀ-Ü]{3,}(?:[A-ZÀ-Ü]*)?)\s*\n\s*([A-ZÀ-Ü][A-Za-zà-ÿ]+(?:\s+[A-ZÀ-Ü][A-Za-zà-ÿ]+)*)",
+    # "Patient" on one line, name on next (OCR line break)
+    r"Patient\s*\n+\s*([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
+    # Urgences IP block: lastname on one line, firstname on next (same line only)
+    r"IP\d+\s*\n\s*([A-ZÀ-Ü]{3,}(?:[A-ZÀ-Ü]*)?)\s*\n\s*([A-ZÀ-Ü][A-Za-zà-ÿ]+(?:[^\S\n]+[A-ZÀ-Ü][A-Za-zà-ÿ]+)*)",
 ]
 
 
@@ -37,6 +43,12 @@ def extract(texts: list[str]) -> Optional[dict]:
     """
     Extract patient name from one or more document texts.
 
+    Strategy: one subfolder = one patient. Different documents may have
+    the name at different levels of completeness (lab results truncate
+    firstnames, urgences concatenate lastnames). We scan ALL patterns
+    across ALL documents, take the LONGEST match for firstnames, and
+    prefer separated lastnames from other matches.
+
     Returns:
         {
             "lastnames":     ["NDOUNKE", "DJATCHEU"],
@@ -46,42 +58,62 @@ def extract(texts: list[str]) -> Optional[dict]:
         }
         or None if no name found.
     """
-    raw_matches = []
-    for text in texts:
-        for pattern in HEADER_PATTERNS:
-            for match in re.finditer(pattern, text):
+    all_matches = []
+    for pattern in HEADER_PATTERNS:
+        for text in texts:
+            match = re.search(pattern, text)
+            if match:
                 if match.lastindex and match.lastindex >= 2:
                     raw = f"{match.group(1)}, {match.group(2)}"
                 else:
                     raw = match.group(1)
-                raw_matches.append(_normalize(raw))
+                all_matches.append(_normalize(raw))
 
-    if not raw_matches:
+    if not all_matches:
         return None
 
-    # Take the longest (most complete) match
-    best = max(raw_matches, key=len)
-    logger.info(f"Extracted patient name: '{best}'")
+    # Parse all matches
+    parsed = [_parse_name(m) for m in all_matches]
 
-    # Split into lastnames / firstnames
-    if "," in best:
-        last_part, first_part = best.split(",", 1)
+    # Take the longest match — most complete firstnames (BRYAN vs BI)
+    best = max(parsed, key=lambda p: len(" ".join(p["firstnames"])))
+
+    # If best has single concatenated lastname (NDOUNKEDJATCHEU), check if
+    # another match has them separated (NDOUNKE DJATCHEU) — prefer separated.
+    if len(best["lastnames"]) == 1:
+        for other in parsed:
+            if len(other["lastnames"]) > 1:
+                # Verify it's the same name concatenated
+                concat = "".join(other["lastnames"])
+                if concat == best["lastnames"][0]:
+                    best["lastnames"] = other["lastnames"]
+                    break
+
+    # Rebuild tokens and variants with merged info
+    best["all_tokens"] = best["lastnames"] + best["firstnames"]
+    best["full_variants"] = _build_variants(best["lastnames"], best["firstnames"])
+
+    logger.info(f"Extracted patient name: {best['lastnames']} {best['firstnames']}")
+    return best
+
+
+def _parse_name(raw: str) -> dict:
+    """Parse a raw name string into structured components."""
+    if "," in raw:
+        last_part, first_part = raw.split(",", 1)
     else:
-        tokens = best.split()
+        tokens = raw.split()
         last_part = " ".join(t for t in tokens if t == t.upper())
         first_part = " ".join(t for t in tokens if t != t.upper())
 
     lastnames = [t for t in last_part.split() if len(t.strip()) >= 2]
     firstnames = [t for t in first_part.split() if len(t.strip()) >= 2]
-    all_tokens = lastnames + firstnames
-
-    # Build matching variants
     full_variants = _build_variants(lastnames, firstnames)
 
     return {
         "lastnames": lastnames,
         "firstnames": firstnames,
-        "all_tokens": all_tokens,
+        "all_tokens": lastnames + firstnames,
         "full_variants": full_variants,
     }
 
