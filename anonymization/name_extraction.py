@@ -24,14 +24,24 @@ logger = logging.getLogger(__name__)
 HEADER_PATTERNS = [
     # "de l'enfant LASTNAME, FIRSTNAME" (apostrophe may be missing from OCR)
     r"de\s+l[''']?enfant\s+([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
-    # "Nom patient  LASTNAME, FIRSTNAME"
-    r"Nom\s+patient\s+([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
-    # "Patient : LASTNAME, FIRSTNAME" — same line
-    r"Patient\s*:\s*([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
+    # "Nom patient  LASTNAME, FIRSTNAME" or "Nom Patient(e): LASTNAME, FIRSTNAME"
+    # Stop at double-space, tab, or known field labels (Lieu, NPI, Date)
+    r"Nom\s+[Pp]atient(?:e|\(e\))?\s*:?\s+([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+(?:[^\S\n][A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+)*)(?=\s{2,}|\t|\n|$)",
+    # "Patient : LASTNAME, FIRSTNAME" or "Patient : LASTNAME; FIRSTNAME"
+    r"Patient\s*:\s*([A-ZÀ-Ü][A-ZÀ-Ü \-]+[,;]\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
     # "Patient" on one line, name on next (OCR line break)
     r"Patient\s*\n+\s*([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
-    # Urgences IP block: lastname on one line, firstname on next (same line only)
-    r"IP\d+\s*\n\s*([A-ZÀ-Ü]{3,}(?:[A-ZÀ-Ü]*)?)\s*\n\s*([A-ZÀ-Ü][A-Za-zà-ÿ]+(?:[^\S\n]+[A-ZÀ-Ü][A-Za-zà-ÿ]+)*)",
+    # Urgences IP block: IP/1P + lastname on next line, firstname on next
+    r"[I1l]P\d+\s*\n\s*([A-ZÀ-Ü]{3,}(?:[A-ZÀ-Ü]*)?)\s*\n\s*([A-ZÀ-Ü][A-Za-zà-ÿ]+(?:[^\S\n]+[A-ZÀ-Ü][A-Za-zà-ÿ]+)*)",
+    # CRU header: bare barcode (10+ digits) then LASTNAME\nFIRSTNAME on next lines
+    r"\b\d{7,15}\s*\n\s*([A-ZÀ-Ü]{3,})\s*\n\s*([A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+)\s*\n",
+    # CRU header (single-line): barcode LASTNAME FIRSTNAME (then address/postal/Né)
+    # Exclude known false firstname captures: Né, Naiss, Sexe, Age, Tel
+    r"\b\d{7,15}\s+([A-ZÀ-Ü]{3,})\s+([A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+)(?=\s+(?:\d|\())",
+    # CRU footer: "LASTNAME FIRSTNAME du" at end of page
+    r"^([A-ZÀ-Ü]{3,})\s+([A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+)\s+du\s*$",
+    # "LASTNAME FIRSTNAME du\n" followed by date/dossier line
+    r"([A-ZÀ-Ü]{3,})\s+([A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+)\s+du\s*\n\s*\d{2}/\d{2}/\d{4}\s+n[°o]",
 ]
 
 
@@ -61,7 +71,7 @@ def extract(texts: list[str]) -> Optional[dict]:
     all_matches = []
     for pattern in HEADER_PATTERNS:
         for text in texts:
-            match = re.search(pattern, text)
+            match = re.search(pattern, text, re.MULTILINE)
             if match:
                 if match.lastindex and match.lastindex >= 2:
                     raw = f"{match.group(1)}, {match.group(2)}"
