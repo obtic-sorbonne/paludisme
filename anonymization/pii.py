@@ -125,6 +125,12 @@ PERSON_PATTERNS = [
     r"dr\d+\s*:\s*([A-ZÀ-Ü]{3,},\s*[A-ZÀ-Ü][a-zà-ÿ]+)",
     # "En accord avec Firstname Lastname"
     r"[Ee]n\s+accord\s+avec\s+([A-ZÀ-Ü][a-zà-ÿ]{2,}(?:\s+[A-ZÀ-Ü][a-zà-ÿ]{2,})?)",
+    # "Par.....: LASTNAME, Firstname" (lab result technician/validator)
+    r"Par\.{2,}\s*:\s*([A-ZÀ-Ü][A-ZÀ-Ü-]+,\s*[A-ZÀ-Ü][a-zà-ÿ]+)(?:\s*,)?",
+    # "Médecin(s) senior(s) : LASTNAME, Firstname" or "LASTNAME Firstname"
+    r"[Mm][ée]decin(?:s)?\s*(?:\(s\))?\s*senior(?:s)?\s*(?:\(s\))?\s*:\s*([A-ZÀ-Ü]{3,},?\s*[A-ZÀ-Ü][a-zà-ÿ]+(?:\s+[A-ZÀ-Ü][a-zà-ÿ]+)?)",
+    # "SIRIEZ, JEAN YVES" or "LASTNAME, FIRSTNAME FIRSTNAME" in MAITRE line
+    r"MAITRE=\w+\s*\n\s*([A-ZÀ-Ü]{3,},\s*[A-ZÀ-Ü]{3,}(?:\s+[A-ZÀ-Ü]{3,})?)",
 ]
 
 # Known false positives — drug names and terms that structurally resemble names.
