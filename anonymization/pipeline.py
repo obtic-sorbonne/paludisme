@@ -16,24 +16,54 @@ from typing import Optional
 
 from . import ocr, name_extraction, pseudonyms, anonymizer
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%H:%M:%S",
-)
+# spaCy model — loaded by run() at startup
+nlp = None
+
+
+def _setup_logging(output_dir: Path):
+    """Configure logging to both console and file."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_path = output_dir / "pipeline.log"
+
+    # Root logger
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # Console handler (already exists by default — clear and re-add)
+    root.handlers.clear()
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S"
+    ))
+    root.addHandler(console)
+
+    # File handler
+    fh = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    ))
+    root.addHandler(fh)
+
+    return log_path
+
+
 logger = logging.getLogger(__name__)
 
-# Try to load spaCy (optional but recommended)
-try:
-    import spacy
-    nlp = spacy.load("fr_core_news_lg")
-    logger.info("spaCy fr_core_news_lg loaded — NER enabled.")
-except Exception:
-    nlp = None
-    logger.warning(
-        "spaCy not available — regex-only mode. "
-        "Install: pip install spacy && python -m spacy download fr_core_news_lg"
-    )
+# spaCy model — loaded lazily by run() at startup
+nlp = None
+
+
+def _save_ocr_texts(doc_texts: dict[str, str], out_dir: Path):
+    """Save raw OCR texts — always, even if anonymization fails."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    parts = []
+    for doc_name, text in doc_texts.items():
+        header = f"\n{'='*60}\n{doc_name}\n{'='*60}\n\n"
+        parts.append(header + text)
+    (out_dir / "ocr_raw.txt").write_text("\n".join(parts), encoding="utf-8")
 
 
 def process_subfolder(
@@ -59,10 +89,17 @@ def process_subfolder(
         subfolder, use_gpu=use_gpu, artifacts_path=artifacts_path
     )
 
+    # Always save raw OCR output (for debugging failed extractions)
+    out_sub = output_dir / subfolder.name
+    _save_ocr_texts(doc_texts, out_sub)
+
     # 2. Extract patient name
     patient_info = name_extraction.extract(list(doc_texts.values()))
     if not patient_info:
-        logger.error(f"  Cannot identify patient in {subfolder.name} — skipping.")
+        logger.error(
+            f"  Cannot identify patient in {subfolder.name} — "
+            f"OCR saved to {out_sub / 'ocr_raw.txt'}"
+        )
         return None
     logger.info(f"  Patient: {patient_info['lastnames']} {patient_info['firstnames']}")
 
@@ -119,7 +156,21 @@ def run(
     artifacts_path: str = None,
 ):
     """Run full pipeline on all patient subfolders."""
-    output_dir.mkdir(parents=True, exist_ok=True)
+    log_path = _setup_logging(output_dir)
+    logger.info(f"Log file: {log_path}")
+
+    # Load spaCy (optional)
+    try:
+        import spacy
+        global nlp
+        nlp = spacy.load("fr_core_news_lg")
+        logger.info("spaCy fr_core_news_lg loaded — NER enabled.")
+    except Exception:
+        nlp = None
+        logger.warning(
+            "spaCy not available — regex-only mode. "
+            "Install: pip install spacy && python -m spacy download fr_core_news_lg"
+        )
 
     subfolders = sorted(
         d for d in input_dir.iterdir()
@@ -132,6 +183,7 @@ def run(
     logger.info(f"Found {len(subfolders)} patient subfolder(s).")
 
     mappings = []
+    skipped = []  # subfolder names where name extraction failed
     for idx, sf in enumerate(subfolders, start=1):
         patient_id = f"{idx:03d}"
         result = process_subfolder(
@@ -140,6 +192,8 @@ def run(
         )
         if result:
             mappings.append(result)
+        else:
+            skipped.append(sf.name)
 
     # Mapping CSV
     csv_path = output_dir / "mapping.csv"
@@ -156,18 +210,31 @@ def run(
     report_path = output_dir / "anonymization_report.txt"
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("ANONYMIZATION REPORT\n" + "=" * 60 + "\n\n")
+        f.write(f"Total subfolders found: {len(subfolders)}\n")
+        f.write(f"Successfully processed: {len(mappings)}\n")
+        f.write(f"Skipped:               {len(skipped)}\n\n")
+
+        if skipped:
+            f.write("SKIPPED SUBFOLDERS (name extraction failed)\n" + "-" * 40 + "\n")
+            for name in skipped:
+                f.write(f"  ✗ {name}  →  see {name}/ocr_raw.txt\n")
+            f.write("  (Check pipeline.log for details)\n\n")
+
+        f.write("PROCESSED SUBFOLDERS\n" + "-" * 40 + "\n")
         for m in mappings:
-            f.write(f"Folder: {m['subfolder']}\n")
+            f.write(f"\nFolder: {m['subfolder']}\n")
             f.write(f"  Real:      {m['real_lastnames']} {m['real_firstnames']}\n")
             f.write(f"  Replaced:  [{m['patient_id']}]\n")
             f.write(f"  Docs: {m['num_docs']}\n")
             for k, v in m["stats"].items():
                 f.write(f"    {k}: {v}\n")
-            f.write("\n")
 
     logger.info(f"CSV: {csv_path}")
     logger.info(f"Report: {report_path}")
-    logger.info("Done.")
+    logger.info(f"Log: {log_path}")
+    if skipped:
+        logger.warning(f"SKIPPED {len(skipped)} subfolder(s): {skipped}")
+    logger.info(f"Done. {len(mappings)}/{len(subfolders)} processed.")
 
 
 def main():
