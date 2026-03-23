@@ -1,3 +1,7 @@
+import os
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+
 """
 OCR module — extract text from scanned PDFs using Docling + EasyOCR (French).
 
