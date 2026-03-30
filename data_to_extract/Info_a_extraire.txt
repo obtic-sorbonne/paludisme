@@ -1,0 +1,99 @@
+DOSSIERS MEDICAUX PALUDISME D'IMPORTATION CHEZ LES ENFANTS
+
+Liste des informations à extraire
+
+Profil du patient :
+Sexe
+Date de naissance
+Age (lors de la consultation)
+Pays de naissance 
+Date d'arrivée en France (si pas né en France) ==> on veut avoir la durée de vie en zone d'endémie
+
+Antécédents:
+Maladies  : 
+Drépanocytose (quel type ? N / SS / AS) 
+accès palustre antérieur (O/N, dates si O)
+diabète (O/N)
+insuffisance rénale chronique (O/N)
+sous antipaludique curatif (O/N)  
+splénectomie (O/N) 
+
+Prophylaxie :
+sous chimioprophylaxie (si arrêtée/interrompue O/N, laquelle et dates si O)
+Moustiquaire imprégnée (O/N)
+
+Episode pendant le séjour ? :
+symptômes durant le séjour : signes digestifs,  fièvre, asthénie…
+a consulté sur place ? (O/N)
+Frottis sanguin et/ou goutte épaisse (O/N)
+Traitement antipaludique (O/N)
+
+
+Motif de la consultation :
+fièvre (température élevée)
+signes digestifs : anorexie, diarrhées, vomissement, nausée, douleur abdominales
+"grosse fatigue" = asthénie
+adressé par médecin traitant
+signes neurologiques : troubles de la conscience, convulsion, céphalées (maux de tête)
+autres motifs de consultation (rhinite, dermatologie…)
+
+
+Dates :
+Dates de toutes les consultations : on veut construire J0, J3/5, J30 etc... (on veut quand même les dates exactes)
+Dates du/des séjour(s) : du JJ/MM/AAAA au JJ//MM/AAAA
+Lieu(x) du/des séjour(s)
+Date des consultations pré-voyage (s'il y en a) 
+Date des premiers symptômes (si on peut les retrouver, par exemple : "fièvre il y a 3j", "diarrhée hier"...)
+	Nature des premiers symptômes : signes digestifs, fièvre, asthénie (grosse fatigue), signes neurologiques (troubles de la conscience, convulsion, céphalées (maux de tête)
+
+Date des prises de médicaments / de traitements antérieurs (s'il y en a)
+Durée d'hospitalisation (si il y a hospitalisation)
+Date et heure des prises en charge (JJ/MM/AAAA HH:MM)
+
+Il nous faut ça à chaque date de consultation/examens pour qu'on puisse avoir chaque paramètre à J0, J3/5, J28/30 etc...
+
+Paramètres :
+Poids (en kg avec 1 décimale)
+Température (en °C)
+Fréquence cardiaque = FC
+Saturation O2 = SaO2
+
+Examen clinique : 
+Hépatomégalie
+Splénomégalie
+pâleur
+raideur de nuque
+ictère
+
+Examen biologique :
+Hémoglobine = hb  (en g/l)
+Plaquettes (en mm^3)
+Leucocytes = GB = globule blanc (en mm^3)
+Eosinophiles (en %)
+ASAT  (en UI)
+ALAT  (en UI)
+Créatinine (en µmol/l)
+Urée (en µmol/l)
+Sodium = Na+ (en mmol/l)
+Bilirubine totale (en µmol/l)
+CRP (en mg/l)
+PCT 
+Frottis sanguin (en %)
+HRP2 : positif/négatif
+PCR : positif/négatif
+GE : positif/négatif
+Hémoculture : positif/négatif ==> si positive, quelle espèce bactérienne ?
+TP 
+TCA
+Gaz du sang : pH , PCO2 , lactates 
+NFS
+
+Prise en charge thérapeutique:
+Nom du/des antipaludique(s): Halofantrine (Halfan) / Atovaquone + Proguanil  (Malarone) / Eurartésime / Quinine IV
+Posologie ( par exemple "3 cp / jour"...)
+Dates, Durée
+Hospitalisation (O/N) ==> si O, durée
+Type de service : Réa (= réanimation) , Pédiatrie Générale (=PG) , Portes 
+ECG et/ou QTC : normal ou non (si non normale indiquer valeur >=440 ms)
+Perfusé ? (O/N), si O, durée
+
