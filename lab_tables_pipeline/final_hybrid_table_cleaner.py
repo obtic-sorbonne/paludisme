@@ -3,7 +3,7 @@ import argparse
 import re
 
 
-JUNK_TOKENS = {"回", "国", "□", "网", "\\", "……", ""}
+JUNK_TOKENS = {"回", "国", "□", "网", "\\", "……", "", "V", "√"}
 
 
 def norm(s: str) -> str:
@@ -15,6 +15,8 @@ def norm(s: str) -> str:
         .replace("à", "a")
         .replace("ù", "u")
         .replace("ï", "i")
+        .replace("î", "i")
+        .replace("ô", "o")
         .replace("’", "'")
         .split()
     )
@@ -32,6 +34,7 @@ def is_metadata_line(line: str) -> bool:
     keys = [
         "nom patient",
         "date / heure",
+        "date heure",
         "date naissance",
         "prescripteur",
         "adresse",
@@ -42,14 +45,18 @@ def is_metadata_line(line: str) -> bool:
         "demande",
         "resultats d'une demande",
         "consultit",
-        "75019 paris19",
+        "75019 paris",
+        "75010 paris 10",
+        "tel:",
+        "hopital robert debre",
+        "lae",
     ]
     return any(k in t for k in keys)
 
 
 def is_header_line(line: str) -> bool:
     t = norm(line)
-    keys = ["description", "resultat", "unite", "valeursnormales", "valeurs normales", "val"]
+    keys = ["description", "resultat", "unite", "valeurs normales", "valeursnormales", "val."]
     return sum(1 for k in keys if k in t) >= 2
 
 
@@ -68,10 +75,57 @@ def looks_like_lab_row_text(line: str) -> bool:
         return False
     if is_metadata_line(t) or is_header_line(t):
         return False
+
     has_num = bool(re.search(r"\d+[.,]\d+|\b\d+\b", t))
-    has_unit = bool(re.search(r"%|g/dl|g/100ml|pg/hematie|10x3/mm3|10X6/mm3|ux3|μ×3", t, re.I))
+    has_unit = bool(
+        re.search(
+            r"%|g/dl|g/100ml|pg/hematie|10x3/mm3|10x6/mm3|/mm3|/mm³|μx3|ux3|μ×3",
+            t,
+            re.I,
+        )
+    )
     has_alpha = bool(re.search(r"[A-Za-zÀ-ÿ]", t))
+
     return has_alpha and (has_num or has_unit)
+
+
+def is_obvious_garbage_row(desc: str, result: str, unit: str, normal: str, val: str) -> bool:
+    joined = norm(" ".join([desc, result, unit, normal, val]))
+
+    garbage_patterns = [
+        "lae",
+        "tel:",
+        "75010 paris 10",
+        "75019 paris",
+        "hopital robert debre",
+        "consultit",
+        "resultats d'une demande",
+        "demande",
+        "nom patient",
+        "date naissance",
+        "prescripteur",
+        "patient adresse",
+        "copie a",
+        "echantillon",
+        "prelevement",
+    ]
+    return any(p in joined for p in garbage_patterns)
+
+
+def is_note_like_row(desc: str, result: str, unit: str, normal: str, val: str) -> bool:
+    t = norm(desc)
+
+    note_like_prefixes = [
+        "rares cellules",
+        "absence d'anomalies",
+    ]
+    if any(t.startswith(p) for p in note_like_prefixes):
+        return True
+
+    if "anomaliesmorphplaquette" in t and result:
+        return True
+
+    return False
 
 
 def sanitize_columns(cols):
@@ -85,12 +139,6 @@ def sanitize_columns(cols):
 
 
 def fix_merged_result_unit(row):
-    """
-    Try to split rows like:
-    ['Polybasophiles. 0,60', '', '%', '', '']
-    into:
-    ['Polybasophiles.', '0,60', '%', '', '']
-    """
     row = sanitize_columns(row)
     if len(row) < 5:
         row = row + [""] * (5 - len(row))
@@ -106,11 +154,10 @@ def fix_merged_result_unit(row):
                 desc = left
                 result = num
 
-    # normalize some OCR unit variants
     unit = unit.replace("g/di", "g/dl")
     unit = unit.replace("ux3", "μ×3")
+    unit = unit.replace("x3", "μ×3") if desc.lower().startswith("volume globulaire") or desc.lower().startswith("volume plaquettaire") else unit
 
-    # drop junk val col
     if val in JUNK_TOKENS:
         val = ""
 
@@ -152,6 +199,12 @@ def parse_hybrid_file(path: Path):
     return upper, core, lower
 
 
+def parse_pipe_row(line: str):
+    parts = [clean_text(x) for x in line.split("|")]
+    row = parts[:5] + [""] * max(0, 5 - len(parts[:5]))
+    return fix_merged_result_unit(row[:5])
+
+
 def main():
     parser = argparse.ArgumentParser(description="Final cleanup for hybrid table parser output")
     parser.add_argument("hybrid_txt", help="Path to hybrid parser txt file")
@@ -171,44 +224,63 @@ def main():
     final_rows = []
     notes = []
 
-    # Upper: keep only actual lab rows or section titles
+    # Upper section
     for line in upper:
+        line = clean_text(line)
+        if not line:
+            continue
         if is_metadata_line(line) or is_header_line(line):
             continue
         if is_section_title(line):
             notes.append(line)
             continue
         if looks_like_lab_row_text(line):
-            parts = [clean_text(x) for x in line.split("|")]
-            parts = [p for p in parts if p != ""]
-            row = parts[:5] + [""] * max(0, 5 - len(parts[:5]))
-            row = fix_merged_result_unit(row[:5])
-            final_rows.append(row)
+            row = parse_pipe_row(line)
+            desc, result, unit, normal, val = row
+            if is_obvious_garbage_row(desc, result, unit, normal, val):
+                continue
+            if is_note_like_row(desc, result, unit, normal, val):
+                notes.append(" | ".join([x for x in row if x]))
+            else:
+                final_rows.append(row)
 
-    # Core: keep rows as main table
+    # Core section
     for line in core:
-        parts = [clean_text(x) for x in line.split("|")]
-        row = parts[:5] + [""] * max(0, 5 - len(parts[:5]))
-        row = fix_merged_result_unit(row[:5])
-
+        row = parse_pipe_row(line)
+        desc, result, unit, normal, val = row
         joined = " ".join(row).strip()
+
         if not joined:
             continue
         if is_metadata_line(joined) or is_header_line(joined):
             continue
-        if looks_like_lab_row_text(joined):
-            final_rows.append(row)
+        if is_obvious_garbage_row(desc, result, unit, normal, val):
+            continue
 
-    # Lower: keep full note section, but make sure Rech parasites sang is included if present
+        # keep rows with result/unit even if they are slightly weird
+        if looks_like_lab_row_text(joined) or result or unit:
+            if is_note_like_row(desc, result, unit, normal, val):
+                notes.append(" | ".join([x for x in row if x]))
+            else:
+                final_rows.append(row)
+
+    # Lower section
     for line in lower:
         line = clean_text(line)
         if not line:
             continue
         if line in JUNK_TOKENS:
             continue
-        notes.append(line)
 
-    # de-duplicate rows while preserving order
+        if looks_like_lab_row_text(line):
+            row = parse_pipe_row(line)
+            desc, result, unit, normal, val = row
+            if not is_obvious_garbage_row(desc, result, unit, normal, val):
+                final_rows.append(row)
+        else:
+            notes.append(line)
+
+    # deduplicate rows
     seen_rows = set()
     dedup_rows = []
     for row in final_rows:
@@ -217,7 +289,7 @@ def main():
             seen_rows.add(key)
             dedup_rows.append(row)
 
-    # de-duplicate notes
+    # deduplicate notes
     seen_notes = set()
     dedup_notes = []
     for n in notes:
