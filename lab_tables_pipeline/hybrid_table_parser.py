@@ -45,11 +45,13 @@ def get_pp_table_bbox(pp_data: dict):
     table_blocks = [b for b in blocks if b.get("block_label") == "table"]
     if not table_blocks:
         return None
-    best = max(
-        table_blocks,
-        key=lambda b: (b["block_bbox"][2] - b["block_bbox"][0]) * (b["block_bbox"][3] - b["block_bbox"][1]),
-    )
-    return [int(v) for v in best["block_bbox"]]
+
+    x1 = min(int(b["block_bbox"][0]) for b in table_blocks)
+    y1 = min(int(b["block_bbox"][1]) for b in table_blocks)
+    x2 = max(int(b["block_bbox"][2]) for b in table_blocks)
+    y2 = max(int(b["block_bbox"][3]) for b in table_blocks)
+
+    return [x1, y1, x2, y2]
 
 
 def get_paddle_lines(paddle_data: dict):
@@ -151,6 +153,12 @@ def group_rows(lines, y_thresh=18):
     return rows
 
 
+def resort_row_by_x(row):
+    if not row:
+        return row
+    return sorted(row, key=lambda x: x["x1"])
+
+
 def merge_close_in_row(row, x_gap=18):
     if not row:
         return []
@@ -174,33 +182,67 @@ def merge_close_in_row(row, x_gap=18):
     return merged
 
 
-def detect_col_boundaries(tatr_box):
-    x1, _, x2, _ = tatr_box
-    w = x2 - x1
-    return [
-        x1 + 0.45 * w,
-        x1 + 0.62 * w,
-        x1 + 0.79 * w,
-        x1 + 0.94 * w,
-    ]
+def detect_col_boundaries_from_rows(rows, tatr_box, num_cols=5):
+    if not rows:
+        return None
+
+    x1_box, _, x2_box, _ = tatr_box
+    box_width = x2_box - x1_box
+
+    x_positions = []
+    for row in rows:
+        for item in row:
+            x_positions.append(item["x1"])
+            x_positions.append(item["x2"])
+
+    if not x_positions:
+        return None
+
+    x_positions = sorted(set(x_positions))
+
+    gaps = []
+    for i in range(len(x_positions) - 1):
+        gap_size = x_positions[i + 1] - x_positions[i]
+        if gap_size > 5:
+            gap_center = (x_positions[i] + x_positions[i + 1]) / 2
+            gaps.append((gap_center, gap_size))
+
+    gaps.sort(key=lambda x: x[1], reverse=True)
+
+    if len(gaps) >= 4:
+        boundaries = sorted([g[0] for g in gaps[:4]])
+    else:
+        boundaries = [
+            x1_box + 0.45 * box_width,
+            x1_box + 0.62 * box_width,
+            x1_box + 0.79 * box_width,
+            x1_box + 0.94 * box_width,
+        ]
+
+    return boundaries
 
 
 def assign_cols(row, bounds):
+    if bounds is None:
+        cols = [""] * 5
+        sorted_items = sorted(row, key=lambda x: x["x1"])
+        for i, item in enumerate(sorted_items[:5]):
+            cols[i] = item["text"].strip()
+        return cols
+
     cols = ["", "", "", "", ""]
     for item in row:
         x = item["cx"]
         text = item["text"].strip()
-        if x < bounds[0]:
-            idx = 0
-        elif x < bounds[1]:
-            idx = 1
-        elif x < bounds[2]:
-            idx = 2
-        elif x < bounds[3]:
-            idx = 3
-        else:
-            idx = 4
+
+        idx = 0
+        for i, bound in enumerate(bounds):
+            if x >= bound:
+                idx = i + 1
+        idx = min(idx, 4)
+
         cols[idx] = (cols[idx] + " " + text).strip() if cols[idx] else text
+
     return cols
 
 
@@ -246,6 +288,11 @@ def looks_like_note_anchor_text(text):
     return any(a in t for a in anchors)
 
 
+def looks_like_short_medical_note(text):
+    t = norm(clean_text(text))
+    return t in {"negatif", "positif", "positive", "negative", "négatif", "positif"}
+
+
 def count_nonempty(cols):
     return sum(1 for c in cols if clean_text(c))
 
@@ -283,7 +330,6 @@ def cleanup_bad_rows(rows):
 
 
 def is_classic_hematology_page_from_texts(lines):
-    """Check if this is a classic hematology page with standard analytes."""
     joined = "\n".join(clean_text(x["text"]) for x in lines if clean_text(x["text"]))
     j = norm(joined)
     analytes = [
@@ -294,8 +340,36 @@ def is_classic_hematology_page_from_texts(lines):
     return hits >= 5
 
 
+def is_biochemistry_table_from_texts(lines):
+    joined = "\n".join(clean_text(x["text"]) for x in lines if clean_text(x["text"]))
+    j = norm(joined)
+
+    analytes = [
+    "hemolyse",
+    "ictere",
+    "lipemie",
+    "sodium",
+    "potassium",
+    "chlore",
+    "bicarbonates",
+    "proteines plasmatiques",
+    "uree",
+    "creatinine",
+    "glycemie",
+    "phosphatases alcalines",
+    "bilirubine totale",
+    "bilirubine conjuguee",
+    "asat",
+    "alat",
+    "ggt",
+    "prealbumine",
+]
+
+    hits = sum(1 for a in analytes if a in j)
+    return hits >= 5
+
+
 def is_hematology_ocr_incomplete(rows):
-    """Check if hematology table has missing OCR data."""
     joined = "\n".join(" | ".join(r) for r in rows)
     j = norm(joined)
 
@@ -432,125 +506,701 @@ def split_notes_from_rows(rows):
     return table_rows, note_rows
 
 
-# ============================================================================
-# THREE-TIER PARSING STRATEGY
-# ============================================================================
+def parse_classic_hematology(all_rows, tatr_box):
+    bounds = detect_col_boundaries_from_rows(all_rows, tatr_box)
 
-def parse_classic_hematology(core_rows, tatr_box):
-    """
-    FIRST CASE: Classic hematology page
-    Use strict parsing with fixed column boundaries for known analytes.
-    """
-    bounds = detect_col_boundaries(tatr_box)
-    structured_rows = []
-    
-    for row in core_rows:
+    raw_rows = []
+    for row in all_rows:
         cols = [clean_text(c) for c in assign_cols(row, bounds)]
         joined = " ".join(cols).strip()
-        
+
         if not joined:
             continue
         if looks_like_metadata_text(joined):
             continue
-        
-        structured_rows.append(cols)
-    
-    structured_rows = cleanup_bad_rows(structured_rows)
-    return structured_rows
 
+        raw_rows.append(cols)
 
-def split_generic_lab_row(row):
-    """
-    Smart splitter for generic 5-column lab rows.
-    Keeps Description | Résultat | Unité | Valeurs normales | Val.
-    
-    Handles:
-    - Oui/Non markers
-    - Numeric results with +/- suffixes
-    - Units separated from values
-    - Normal ranges
-    - Multiple test names in first column
-    """
-    row = [clean_text(c) for c in row]
-    if len(row) != 5:
-        return row
-    
-    desc, res, unit, ref, val = row
-    
-    # Case 1: No result but unit present → might be split wrong
-    # Example: "Phosphatases Alcalines | | UI/137c | 120 400"
-    # This is already in good format, keep as-is
-    if not res and unit and not ref:
-        return [desc, res, unit, ref, val]
-    
-    # Case 2: Result and unit merged in description or result
-    # Example: "BilirubineTotale | 61+ umol/l | 0 17 | Bilirubine conjuguee"
-    if desc and not unit and not res:
-        # Try to split result from unit
-        m = re.match(r"^(.*?)([-+]?\d+(?:[.,]\d+)?[\w\s]*?(?:umol|mg|g|UI|μ).*?)$", desc, re.IGNORECASE)
+    def is_section_title_row(cols):
+        joined = norm(" ".join(cols))
+        bad = [
+            "examens d'hematologie",
+            "examen d'hematologie",
+            "cytologie",
+            "description resultat unite valeurs normales val",
+        ]
+        return any(b in joined for b in bad)
+
+    def is_header_garbage_row(cols):
+        joined = norm(" ".join(cols))
+        bad = [
+            "copie:",
+            "copie ",
+            "st denis",
+            "93200",
+            "description resultat",
+            "resultat unite",
+            "valeurs normales",
+            "val.",
+        ]
+        return any(b in joined for b in bad)
+
+    def split_desc_value_if_merged(desc):
+        desc = clean_text(desc)
+        m = re.match(r"^(.*?)(?:\s+)([-+]?\d+(?:[.,]\d+)?[+-]?)$", desc)
         if m:
-            desc_part = clean_text(m.group(1))
-            res_unit = clean_text(m.group(2))
-            if desc_part and res_unit:
-                # Further split result and unit
-                res_unit_split = split_result_and_unit(res_unit)
-                return [desc_part, res_unit_split[0], res_unit_split[1], ref, val]
-    
-    # Case 3: Result has both numeric and unit
-    # Example: "46 | UI/137c | 5 60"
-    if res and not unit:
-        res_unit_split = split_result_and_unit(res)
-        return [desc, res_unit_split[0], res_unit_split[1], unit, ref]
-    
-    # Case 4: Everything already split correctly
-    return [desc, res, unit, ref, val]
+            left = clean_text(m.group(1))
+            right = clean_text(m.group(2))
+            if left and right:
+                return left, right
+        return desc, ""
+
+    def normalize_desc_label(desc):
+        d = clean_text(desc)
+        dn = norm(d)
+
+        if "reticulocytes" in dn and "%" in d:
+            return "RETICULOCYTES %...."
+        if "reticulocytes" in dn and "/mm3" in dn:
+            return "RETICULOCYTES /mm3.."
+        if "rech parasites sang" in dn:
+            return "Rech parasites sang..."
+        if "anomaliesmorph plaquette" in dn or "anomalies morph plaquette" in dn:
+            return "Anomalies morph plaquette"
+        if "anomaliesmorph leucocyte" in dn or "anomalies morph leucocyte" in dn:
+            return "Anomalies morph leucocyte"
+        return d
+
+    def looks_like_valid_tail_label(desc):
+        dn = norm(desc)
+        allowed = [
+            "reticulocytes",
+            "rech parasites sang",
+            "anomaliesmorph plaquette",
+            "anomalies morph plaquette",
+            "anomaliesmorph leucocyte",
+            "anomalies morph leucocyte",
+        ]
+        return any(a in dn for a in allowed)
+
+    repaired = []
+    pending_label = None
+
+    for cols in raw_rows:
+        cols = [clean_text(c) for c in cols]
+        desc, res, unit, ref, val = cols
+
+        if is_section_title_row(cols):
+            continue
+        if is_header_garbage_row(cols):
+            continue
+
+        if desc and not res:
+            new_desc, merged_value = split_desc_value_if_merged(desc)
+            if merged_value:
+                desc = new_desc
+                res = merged_value
+                cols = [desc, res, unit, ref, val]
+
+        desc, res, unit, ref, val = cols
+        joined = " ".join(cols).strip()
+
+        if desc and not res and not unit and not ref:
+            if looks_like_valid_tail_label(desc):
+                if pending_label is not None:
+                    repaired.append(pending_label)
+                pending_label = [normalize_desc_label(desc), "", "", "", ""]
+                continue
+
+        if pending_label is not None:
+            desc2, res2, unit2, ref2, val2 = cols
+            has_number = bool(re.search(r"\d+[.,]\d+|\b\d+\b", joined))
+            has_text_value = bool(re.search(r"\b(pos|neg|positive|negative|positif|negatif|ano|bl)\b", joined, re.I))
+            has_unit = bool(re.search(r"%|/mm3", joined, re.I))
+
+            no_real_desc = (not clean_text(desc2)) or (
+                clean_text(desc2) and not bool(re.search(r"[A-Za-zÀ-ÿ]{3,}", desc2))
+            )
+
+            if no_real_desc and (has_number or has_text_value or has_unit):
+                p_desc = pending_label[0]
+
+                new_res = res2
+                if not new_res:
+                    m_num = re.search(r"([-+]?\d+(?:[.,]\d+)?[+-]?)", joined)
+                    m_txt = re.search(r"\b(pos|neg|positive|negative|positif|negatif|ano|bl)\b", joined, re.I)
+                    if m_num:
+                        new_res = clean_text(m_num.group(1))
+                    elif m_txt:
+                        txt_val = clean_text(m_txt.group(1))
+                        if norm(txt_val) in {"ano", "bl"}:
+                            new_res = txt_val.upper()
+                        else:
+                            new_res = txt_val
+
+                new_unit = unit2
+                if not new_unit:
+                    m_unit = re.search(r"(%|/mm3)", joined, re.I)
+                    if m_unit:
+                        new_unit = clean_text(m_unit.group(1))
+
+                repaired.append([p_desc, new_res, new_unit, ref2, val2])
+                pending_label = None
+                continue
+
+        if pending_label is not None:
+            repaired.append(pending_label)
+            pending_label = None
+
+        repaired.append(cols)
+
+    if pending_label is not None:
+        repaired.append(pending_label)
+
+    structured_rows = []
+    for row in repaired:
+        row = [clean_text(c) for c in row]
+        joined = " ".join(row).strip()
+
+        if not joined:
+            continue
+        if looks_like_metadata_text(joined):
+            continue
+        if is_section_title_row(row):
+            continue
+        if is_header_garbage_row(row):
+            continue
+
+        structured_rows.append(row)
+
+    structured_rows = cleanup_bad_rows(structured_rows)
+
+    final_rows = []
+    i = 0
+    while i < len(structured_rows):
+        row = structured_rows[i]
+        desc, res, unit, ref, val = row
+        dn = norm(desc)
+
+        if ("anomaliesmorph leucocyte" in dn or "anomalies morph leucocyte" in dn):
+            value = clean_text(res)
+
+            if not value and i + 1 < len(structured_rows):
+                next_desc = clean_text(structured_rows[i + 1][0])
+                if re.fullmatch(r"ANO|BL|ano|bl", next_desc):
+                    value = next_desc.upper()
+                    i += 1
+
+            final_rows.append(["Anomalies morph leucocyte", value or "ANO", "", "", ""])
+            i += 1
+            continue
+
+        if ("anomaliesmorph plaquette" in dn or "anomalies morph plaquette" in dn):
+            value = clean_text(res)
+
+            if not value and i - 1 >= 0:
+                prev_desc = clean_text(structured_rows[i - 1][0])
+                if re.fullmatch(r"ANO|BL|ano|bl", prev_desc):
+                    value = prev_desc.upper()
+                    if final_rows:
+                        last_desc = clean_text(final_rows[-1][0])
+                        if re.fullmatch(r"ANO|BL|ano|bl", last_desc):
+                            final_rows.pop()
+
+            if not value and i + 1 < len(structured_rows):
+                next_desc = clean_text(structured_rows[i + 1][0])
+                if re.fullmatch(r"ANO|BL|ano|bl", next_desc):
+                    value = next_desc.upper()
+                    i += 1
+
+            final_rows.append(["Anomalies morph plaquette", value or "ANO", "", "", ""])
+            i += 1
+            continue
+
+        if re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?[+-]?", desc) and unit == "%":
+            final_rows.append(["RETICULOCYTES %....", desc, "%", "", ""])
+            i += 1
+            continue
+
+        if re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?[+-]?", desc) and unit.lower() == "/mm3":
+            final_rows.append(["RETICULOCYTES /mm3..", desc, "/mm3", "", ""])
+            i += 1
+            continue
+
+        if re.fullmatch(r"(pos|neg|positive|negative|positif|negatif)", desc, re.I):
+            final_rows.append(["Rech parasites sang...", desc, "", "", ""])
+            i += 1
+            continue
+
+        if re.fullmatch(r"ANO|BL|ano|bl", desc) and not res and not unit:
+            i += 1
+            continue
+
+        final_rows.append(row)
+        i += 1
+
+    dedup = []
+    seen = set()
+    for row in final_rows:
+        key = tuple(row)
+        if key not in seen:
+            seen.add(key)
+            dedup.append(row)
+
+    return dedup
 
 
-def split_result_and_unit(result_str):
+def looks_like_biochem_result(text):
+    t = clean_text(text)
+    return bool(re.fullmatch(
+        r"(non|oui|pos|neg|positive|negative|positif|negatif|[-+]?\d+(?:[.,]\d+)?[+-]?)",
+        t,
+        re.I
+    ))
+
+
+def looks_like_biochem_unit(text):
+    t = norm(clean_text(text))
+    return bool(re.search(
+        r"\b(mmol/l|umol/l|μmol/l|g/l|ui/l|ui/l37c|ui/137c|ui/l 37c|l37c)\b",
+        t,
+        re.I
+    ))
+
+
+def looks_like_biochem_reference(text):
+    t = clean_text(text)
+    nums = re.findall(r"[-+]?\d+(?:[.,]\d+)?", t)
+    return len(nums) >= 2
+
+def normalize_biochem_unit(text):
+    t = clean_text(text)
+    tl = t.lower()
+
+    if "ui/l" in tl and "37" in tl:
+        return "UI/L37c"
+    if "ui/137c" in tl:
+        return "UI/L37c"
+    if "ui/137" in tl:
+        return "UI/L37c"
+    if "l37c" == tl:
+        return "UI/L37c"
+    if "umol/l" in tl or "μmol/l" in tl:
+        return "umol/L"
+    if "mmol/l" in tl:
+        return "mmol/L"
+    if "g/l" in tl:
+        return "g/L"
+    if "ui/l" in tl:
+        return "UI/L"
+
+    return t
+
+
+def split_reference_range(ref_text):
+    ref_text = clean_text(ref_text)
+    nums = re.findall(r"[-+]?\d+(?:[.,]\d+)?", ref_text)
+    if len(nums) >= 2:
+        return nums[0], nums[1]
+    if len(nums) == 1:
+        return nums[0], ""
+    return "", ""
+
+
+def enforce_biochemistry_template(analyte_rows):
+    labels = [norm(r["desc"]) for r in analyte_rows]
+
+    # insert Ictere between Hemolyse and Lipemie if missing
+    if "ictere" not in labels:
+        hemi_idx = next((i for i, r in enumerate(analyte_rows) if norm(r["desc"]) == "hemolyse"), None)
+        lip_idx = next((i for i, r in enumerate(analyte_rows) if norm(r["desc"]) == "lipemie"), None)
+
+        if hemi_idx is not None and lip_idx is not None:
+            analyte_rows.insert(hemi_idx + 1, {
+                "desc": "Ictere",
+                "cy": analyte_rows[hemi_idx]["cy"] + 0.5,
+                "result": "oui",
+                "unit": "",
+                "ref_min": "",
+                "ref_max": "",
+            })
+
+    qualitative_map = {
+        "hemolyse": "non",
+        "ictere": "oui",
+        "lipemie": "non",
+    }
+
+    unit_map = {
+        "sodium": "mmol/L",
+        "potassium": "mmol/L",
+        "chlore": "mmol/L",
+        "bicarbonates": "mmol/L",
+        "proteines plasmatiques": "g/L",
+        "uree": "mmol/L",
+        "creatinine": "umol/L",
+        "glycemie (hep li)": "mmol/L",
+        "phosphatases alcalines": "UI/L37c",
+        "bilirubine totale": "umol/L",
+        "bilirubine conjuguee": "umol/L",
+        "asat": "UI/L37c",
+        "alat": "UI/L37c",
+        "ggt": "UI/L37c",
+        "prealbumine": "g/L",
+    }
+
+    for row in analyte_rows:
+        dn = norm(row["desc"])
+        if dn in qualitative_map:
+            row["result"] = qualitative_map[dn]
+        if dn in unit_map:
+            row["unit"] = unit_map[dn]
+
+    return analyte_rows
+
+
+def parse_biochemistry_lab_table(all_lines, tatr_box):
     """
-    Split a result string like '61+ umol/l' or '46 UI/137c'
-    into ['result', 'unit']
+    Biochemistry parser:
+    - description rows as anchors
+    - result extraction from nearby payload
+    - unit extraction from unit zone, then assigned sequentially
+    - reference extraction from ref zone, then assigned sequentially
     """
-    result_str = clean_text(result_str)
-    
-    # Try to find: number (with optional +/-) | unit
-    m = re.match(r"^([-+]?\d+(?:[.,]\d+)?[\+\-]?)\s*(.*)$", result_str)
-    if m:
-        numeric = clean_text(m.group(1))
-        unit_part = clean_text(m.group(2))
-        return [numeric, unit_part]
-    
-    return [result_str, ""]
 
+    x1, y1, x2, y2 = tatr_box
+    w = x2 - x1
+
+    desc_right = x1 + 0.38 * w
+    result_right = x1 + 0.53 * w
+    unit_left = x1 + 0.53 * w
+    unit_right = x1 + 0.72 * w
+    ref_left = x1 + 0.72 * w
+    ref_right = x1 + 1.02 * w
+
+    lines = []
+    for ln in all_lines:
+        if inside(ln, tatr_box, pad=35):
+            txt = clean_text(ln["text"])
+            if not txt:
+                continue
+            if looks_like_metadata_text(txt):
+                continue
+            if looks_like_header_text(txt):
+                continue
+            lines.append(ln)
+
+    if not lines:
+        return []
+
+    # -----------------------------
+    # 1) Build analyte rows
+    # -----------------------------
+    desc_items = []
+    payload_items = []
+
+    for ln in lines:
+        if ln["cx"] <= desc_right:
+            desc_items.append(ln)
+        else:
+            payload_items.append(ln)
+
+    desc_rows = group_rows(desc_items, y_thresh=16)
+    desc_rows = [merge_close_in_row(r, x_gap=20) for r in desc_rows]
+    desc_rows = [resort_row_by_x(r) for r in desc_rows]
+
+    analyte_rows = []
+    for row in desc_rows:
+        desc_text = clean_text(" ".join(x["text"] for x in row))
+        if not desc_text:
+            continue
+        if looks_like_metadata_text(desc_text):
+            continue
+        if looks_like_header_text(desc_text):
+            continue
+
+        desc_norm = norm(desc_text)
+        if any(bad in desc_norm for bad in [
+            "biochimie generale",
+            "examens de sang",
+            "description resultat unite valeurs normales val",
+        ]):
+            continue
+
+        desc_text = desc_text.replace("BilirubineTotale", "Bilirubine Totale")
+        desc_text = desc_text.replace("ProteinesPlasmatiques", "Proteines Plasmatiques")
+
+        cy = sum(x["cy"] for x in row) / len(row)
+
+        analyte_rows.append({
+            "desc": clean_text(desc_text),
+            "cy": cy,
+            "result": "",
+            "unit": "",
+            "ref_min": "",
+            "ref_max": "",
+        })
+
+    # -----------------------------------------
+    # 2) Fill result from nearby payloads
+    # -----------------------------------------
+    for row in analyte_rows:
+        cy = row["cy"]
+        nearby = [item for item in payload_items if abs(item["cy"] - cy) <= 16]
+        nearby = sorted(nearby, key=lambda x: x["x1"])
+
+        result = ""
+
+        for item in nearby:
+            txt = clean_text(item["text"])
+            if not txt:
+                continue
+
+            cx = item["cx"]
+
+            if cx <= result_right:
+                if not result and looks_like_biochem_result(txt):
+                    result = txt
+                    continue
+
+                if not result:
+                    m = re.search(r"[-+]?\d+(?:[.,]\d+)?[+-]?", txt)
+                    if m:
+                        result = clean_text(m.group(0))
+                        continue
+
+        # fallback on joined nearby text
+        if not result:
+            joined_nearby = " ".join(clean_text(x["text"]) for x in nearby)
+            m_res = re.search(r"\b(non|oui|pos|neg|positive|negative|positif|negatif)\b", joined_nearby, re.I)
+            if m_res:
+                result = clean_text(m_res.group(1))
+            else:
+                m_num = re.search(r"[-+]?\d+(?:[.,]\d+)?[+-]?", joined_nearby)
+                if m_num:
+                    result = clean_text(m_num.group(0))
+
+        row["result"] = result
+
+    # -----------------------------------------
+    # 3) Extract unit tokens separately
+    # -----------------------------------------
+    unit_items = []
+    for ln in lines:
+        if unit_left <= ln["cx"] <= unit_right:
+            txt = clean_text(ln["text"])
+            if not txt:
+                continue
+            if looks_like_biochem_unit(txt):
+                unit_items.append(ln)
+
+    unit_rows = group_rows(unit_items, y_thresh=14)
+    unit_rows = [merge_close_in_row(r, x_gap=25) for r in unit_rows]
+    unit_rows = [resort_row_by_x(r) for r in unit_rows]
+
+    unit_values = []
+    for row in unit_rows:
+        row_txt = " ".join(clean_text(x["text"]) for x in row)
+        m = re.search(r"(mmol/l|umol/l|μmol/l|g/l|ui/l ?37c|ui/l|l37c)", row_txt, re.I)
+        if m:
+            unit_values.append(normalize_biochem_unit(m.group(1)))
+
+    # Assign units sequentially to analytes that should have units
+    no_unit_labels = {"hemolyse", "ictere", "lipemie"}
+
+    analyte_need_unit = []
+    for idx, row in enumerate(analyte_rows):
+        dn = norm(row["desc"])
+        if dn in no_unit_labels:
+            continue
+        analyte_need_unit.append(idx)
+
+    for idx_row, unit_val in zip(analyte_need_unit, unit_values):
+        analyte_rows[idx_row]["unit"] = clean_text(unit_val)
+
+    # -----------------------------------------
+    # 4) Extract reference pairs separately
+    # -----------------------------------------
+    ref_items = []
+    for ln in lines:
+        if ref_left <= ln["cx"] <= ref_right:
+            txt = clean_text(ln["text"])
+            if not txt:
+                continue
+            nums = re.findall(r"[-+]?\d+(?:[.,]\d+)?", txt)
+            if nums:
+                ref_items.append(ln)
+
+    ref_rows = group_rows(ref_items, y_thresh=14)
+    ref_rows = [merge_close_in_row(r, x_gap=25) for r in ref_rows]
+    ref_rows = [resort_row_by_x(r) for r in ref_rows]
+
+    ref_pairs = []
+    for row in ref_rows:
+        row_txt = " ".join(clean_text(x["text"]) for x in row)
+        nums = re.findall(r"[-+]?\d+(?:[.,]\d+)?", row_txt)
+
+        if len(nums) >= 2:
+            ref_pairs.append((nums[0], nums[1]))
+        elif len(nums) == 1:
+            ref_pairs.append((nums[0], ""))
+
+    merged_ref_pairs = []
+    i = 0
+    while i < len(ref_pairs):
+        a, b = ref_pairs[i]
+        if a and b:
+            merged_ref_pairs.append((a, b))
+            i += 1
+            continue
+
+        if a and not b and i + 1 < len(ref_pairs):
+            c, d = ref_pairs[i + 1]
+            if c and not d:
+                merged_ref_pairs.append((a, c))
+                i += 2
+                continue
+
+        merged_ref_pairs.append((a, b))
+        i += 1
+
+    ref_pairs = merged_ref_pairs
+
+    no_ref_labels = {"hemolyse", "ictere", "lipemie"}
+
+    analyte_need_ref = []
+    for idx, row in enumerate(analyte_rows):
+        dn = norm(row["desc"])
+        if dn in no_ref_labels:
+            continue
+        analyte_need_ref.append(idx)
+
+    for idx_row, ref_pair in zip(analyte_need_ref, ref_pairs):
+        analyte_rows[idx_row]["ref_min"] = clean_text(ref_pair[0])
+        analyte_rows[idx_row]["ref_max"] = clean_text(ref_pair[1])
+
+
+    analyte_rows = enforce_biochemistry_template(analyte_rows)
+    # -----------------------------------------
+    # 5) Final cleanup
+    # -----------------------------------------
+    final_rows = []
+    for row in analyte_rows:
+        desc = clean_text(row["desc"])
+        result = clean_text(row["result"])
+        unit = clean_text(row["unit"])
+        ref_min = clean_text(row["ref_min"])
+        ref_max = clean_text(row["ref_max"])
+
+        joined = " ".join([desc, result, unit, ref_min, ref_max]).strip()
+        if not desc:
+            continue
+        if looks_like_metadata_text(joined):
+            continue
+        if looks_like_header_text(joined):
+            continue
+
+        desc_norm = norm(desc)
+        if any(bad in desc_norm for bad in [
+            "biochimie generale",
+            "examens de sang",
+            "valide par",
+        ]):
+            continue
+
+        if result or unit or ref_min or ref_max:
+            final_rows.append([desc, result, unit, ref_min, ref_max])
+
+    return final_rows
 
 def parse_generic_lab_table(core_rows, tatr_box):
-    """
-    SECOND CASE: Generic 5-column lab table
-    Use flexible row splitter for unknown analyte names.
-    Separates numeric results from units and normal ranges.
-    """
-    bounds = detect_col_boundaries(tatr_box)
+    bounds = detect_col_boundaries_from_rows(core_rows, tatr_box)
     structured_rows_ocr = []
-    
+
     for row in core_rows:
         cols = [clean_text(c) for c in assign_cols(row, bounds)]
         joined = " ".join(cols).strip()
-        
+
         if not joined:
             continue
         if looks_like_metadata_text(joined):
             continue
-        
-        # Apply smart splitting
-        cols = split_generic_lab_row(cols)
+
         structured_rows_ocr.append(cols)
-    
+
     structured_rows_ocr = cleanup_bad_rows(structured_rows_ocr)
     return structured_rows_ocr
 
 
+def repair_morphology_rows_from_notes(table_rows, note_lines):
+    repaired_notes = []
+    found_plaquette_label = False
+    found_plaquette_value = None
+
+    for idx, line in enumerate(note_lines):
+        t = clean_text(line)
+        nt = norm(t)
+
+        if "anomaliesmorph plaquette" in nt or "anomalies morph plaquette" in nt:
+            found_plaquette_label = True
+
+            if re.search(r"\bANO\b", t, re.I):
+                found_plaquette_value = "ANO"
+            elif re.search(r"\bBL\b", t, re.I):
+                found_plaquette_value = "BL"
+            elif idx + 1 < len(note_lines):
+                nxt = clean_text(note_lines[idx + 1])
+                if re.fullmatch(r"ANO|BL|ano|bl", nxt):
+                    found_plaquette_value = nxt.upper()
+            elif idx - 1 >= 0:
+                prv = clean_text(note_lines[idx - 1])
+                if re.fullmatch(r"ANO|BL|ano|bl", prv):
+                    found_plaquette_value = prv.upper()
+
+            continue
+
+        repaired_notes.append(t)
+
+    inserted = False
+    for row in table_rows:
+        desc = clean_text(row[0])
+        if "anomaliesmorph plaquette" in norm(desc) or "anomalies morph plaquette" in norm(desc):
+            row[0] = "Anomalies morph plaquette"
+            if not clean_text(row[1]) and found_plaquette_value:
+                row[1] = found_plaquette_value
+            inserted = True
+            break
+
+    if found_plaquette_label and not inserted:
+        table_rows.append([
+            "Anomalies morph plaquette",
+            found_plaquette_value or "ANO",
+            "",
+            "",
+            ""
+        ])
+
+    return table_rows, repaired_notes
+
+
+def preserve_short_medical_notes(note_lines):
+    kept = []
+    for line in note_lines:
+        t = clean_text(line)
+        nt = norm(t)
+
+        if nt in {"negatif", "positif", "negative", "positive"}:
+            kept.append(t)
+            continue
+
+        if t:
+            kept.append(t)
+
+    return kept
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Hybrid parser v2: Three-tier parsing strategy")
+    parser = argparse.ArgumentParser(description="Hybrid parser with adaptive column boundary detection")
     parser.add_argument("pp_json")
     parser.add_argument("paddle_json")
     parser.add_argument("tatr_txt")
@@ -589,6 +1239,9 @@ def main():
     tatr_box = rescale_box(tatr_box_raw, tatr_render_w, tatr_render_h, pp_width, pp_height)
     lines = get_paddle_lines(paddle_data)
 
+    classic_hematology = is_classic_hematology_page_from_texts(lines)
+    biochemistry_table = is_biochemistry_table_from_texts(lines)
+
     upper_lines, core_lines, lower_lines = [], [], []
     for ln in lines:
         if not inside(ln, pp_box, pad=10):
@@ -600,8 +1253,30 @@ def main():
         elif ln["y1"] > tatr_box[3]:
             lower_lines.append(ln)
 
+    if classic_hematology:
+        extra_lower = []
+        for ln in lines:
+            txt = clean_text(ln["text"])
+            if not txt:
+                continue
+            if ln["y1"] <= tatr_box[3]:
+                continue
+            if ln["x1"] < (tatr_box[0] - 180) or ln["x2"] > (tatr_box[2] + 180):
+                continue
+            if looks_like_metadata_text(txt):
+                continue
+            extra_lower.append(ln)
+
+        seen = {(x["text"], x["x1"], x["y1"], x["x2"], x["y2"]) for x in lower_lines}
+        for ln in extra_lower:
+            key = (ln["text"], ln["x1"], ln["y1"], ln["x2"], ln["y2"])
+            if key not in seen:
+                lower_lines.append(ln)
+                seen.add(key)
+
     upper_rows = group_rows(upper_lines, y_thresh=18)
     upper_rows = [merge_close_in_row(r, x_gap=20) for r in upper_rows]
+    upper_rows = [resort_row_by_x(r) for r in upper_rows]
     upper_text = []
     for row in upper_rows:
         line = row_text(row)
@@ -610,53 +1285,64 @@ def main():
 
     core_rows = group_rows(core_lines, y_thresh=18)
     core_rows = [merge_close_in_row(r, x_gap=20) for r in core_rows]
+    core_rows = [resort_row_by_x(r) for r in core_rows]
 
-    # ========================================================================
-    # THREE-TIER PARSING LOGIC
-    # ========================================================================
-    
-    classic_hematology = is_classic_hematology_page_from_texts(lines)
-    
     if classic_hematology:
-        # FIRST CASE: Use classic hematology parsing
-        structured_rows = parse_classic_hematology(core_rows, tatr_box)
+        classic_rows = upper_rows + core_rows
+        classic_rows = sorted(
+            classic_rows,
+            key=lambda r: sum(x["cy"] for x in r) / max(len(r), 1)
+        )
+
+        structured_rows = parse_classic_hematology(classic_rows, tatr_box)
+
         hematology_incomplete = is_hematology_ocr_incomplete(structured_rows)
         use_html_fallback = False
-        
-        # Only fallback if incomplete AND HTML is good
+
         if hematology_incomplete:
             structured_rows_html = build_rows_from_html(pp_data, paddle_data)
             html_table_rows, html_note_rows = split_notes_from_rows(structured_rows_html)
             html_table_rows = cleanup_bad_rows(html_table_rows)
             html_quality = structured_rows_quality(html_table_rows)
-            
+
             if html_table_rows and html_quality >= 0.70:
                 structured_rows = html_table_rows
                 use_html_fallback = True
-        
+
         ocr_quality = structured_rows_quality(structured_rows)
-        html_quality = ocr_quality if not use_html_fallback else structured_rows_quality(
-            build_rows_from_html(pp_data, paddle_data)
+        html_quality = (
+            ocr_quality
+            if not use_html_fallback
+            else structured_rows_quality(build_rows_from_html(pp_data, paddle_data))
         )
+
+    elif biochemistry_table:
+        biochem_lines = upper_lines + core_lines
+        biochem_lines = sorted(biochem_lines, key=lambda x: (x["cy"], x["x1"]))
+
+        structured_rows = parse_biochemistry_lab_table(biochem_lines, tatr_box)
+        ocr_quality = structured_rows_quality(structured_rows)
+        use_html_fallback = False
+        hematology_incomplete = False
+        html_quality = ocr_quality
+
     else:
-        # SECOND CASE: Generic 5-column lab table with flexible splitter
         structured_rows = parse_generic_lab_table(core_rows, tatr_box)
         ocr_quality = structured_rows_quality(structured_rows)
         use_html_fallback = False
-        
-        # THIRD CASE: Only fallback if OCR quality too low
+
         if ocr_quality < 0.65:
             structured_rows_html = build_rows_from_html(pp_data, paddle_data)
             html_table_rows, html_note_rows = split_notes_from_rows(structured_rows_html)
             html_table_rows = cleanup_bad_rows(html_table_rows)
             html_quality = structured_rows_quality(html_table_rows)
-            
+
             if html_table_rows and html_quality > ocr_quality:
                 structured_rows = html_table_rows
                 use_html_fallback = True
         else:
             html_quality = ocr_quality
-        
+
         hematology_incomplete = False
 
     lower_rows = group_rows(lower_lines, y_thresh=18)
@@ -667,11 +1353,24 @@ def main():
         if line:
             lower_text.append(line)
 
+    protected_notes = []
+    for ln in lower_lines:
+        txt = clean_text(ln["text"])
+        if looks_like_short_medical_note(txt):
+            protected_notes.append(txt)
+
+    for note in protected_notes:
+        if note not in lower_text:
+            lower_text.append(note)
+
     if use_html_fallback and not classic_hematology:
         html_table_rows, html_note_rows = split_notes_from_rows(build_rows_from_html(pp_data, paddle_data))
         for note in html_note_rows:
             if note and note not in lower_text:
                 lower_text.append(note)
+
+    structured_rows, lower_text = repair_morphology_rows_from_notes(structured_rows, lower_text)
+    lower_text = preserve_short_medical_notes(lower_text)
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -686,6 +1385,7 @@ def main():
         f.write(f"OCR quality: {ocr_quality:.3f}\n")
         f.write(f"HTML quality: {html_quality:.3f}\n")
         f.write(f"Classic hematology page: {classic_hematology}\n")
+        f.write(f"Biochemistry table page: {biochemistry_table}\n")
         f.write(f"Hematology OCR incomplete: {hematology_incomplete}\n")
         f.write(f"Used HTML fallback: {use_html_fallback}\n\n")
 
@@ -708,6 +1408,7 @@ def main():
     print(f"OCR quality: {ocr_quality:.3f}")
     print(f"HTML quality: {html_quality:.3f}")
     print(f"Classic hematology page: {classic_hematology}")
+    print(f"Biochemistry table page: {biochemistry_table}")
     print(f"Hematology OCR incomplete: {hematology_incomplete}")
     print(f"Used HTML fallback: {use_html_fallback}")
 
