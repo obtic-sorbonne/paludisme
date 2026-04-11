@@ -22,6 +22,7 @@ def norm(s: str) -> str:
         .replace("ô", "o")
         .replace("ö", "o")
         .replace("ç", "c")
+        .replace("’", "'")
         .replace("'", "'")
         .split()
     )
@@ -32,6 +33,114 @@ def clean_text(s: str) -> str:
     s = s.replace("\xa0", " ")
     s = re.sub(r"\s+", " ", s)
     return s
+
+
+def normalize_biochem_result(text: str) -> str:
+    t = clean_text(text)
+    t = re.sub(r"^\s*<\s*", "<", t)
+    t = re.sub(r"^\s*>\s*", ">", t)
+    t = re.sub(r"\s+", "", t) if re.fullmatch(r"[<>]?\s*[-+]?\d+(?:[.,]\d+)?[+-]?", t) else t
+    return t
+
+
+def sanitize_hematology_unit(text: str) -> str:
+    t = clean_text(text)
+
+    if not t:
+        return ""
+
+    t = t.replace("ux3", "μ×3")
+    t = t.replace("μx3", "μ×3")
+    t = t.replace("UI/I37c", "UI/L37c")
+    t = t.replace("UI/137c", "UI/L37c")
+    t = t.replace("UI/I", "UI/L")
+    t = t.replace("ui/l", "UI/L")
+    t = t.replace("umol/i", "umol/L")
+    t = t.replace("mml/l", "mmol/L")
+    t = t.replace("g/di", "g/dl")
+
+    allowed_units = {
+        "%",
+        "g/dl",
+        "g/100ml",
+        "pg/hematie",
+        "10x3/mm3",
+        "10x6/mm3",
+        "/mm3",
+        "/mm³",
+        "μx3",
+        "ux3",
+        "μ×3",
+        "mmhg",
+        "mmol/l",
+        "umol/l",
+        "ui/l",
+        "ml/100",
+        "g pour 100 ml",
+        "g/l",
+        "ui/l37c",
+    }
+    allowed_units_norm = {norm(x) for x in allowed_units}
+
+    if norm(t) in allowed_units_norm:
+        return t
+
+    return ""
+
+
+def sanitize_hematology_normal(text: str) -> str:
+    t = clean_text(text)
+    if not t:
+        return ""
+
+    if re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", t):
+        return t
+    if re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?\s*[-–]\s*[-+]?\d+(?:[.,]\d+)?", t):
+        return t
+    if re.fullmatch(r"<\s*[-+]?\d+(?:[.,]\d+)?", t):
+        return t
+    if re.fullmatch(r">\s*[-+]?\d+(?:[.,]\d+)?", t):
+        return t
+
+    return ""
+
+
+def sanitize_biochemistry_unit(text: str) -> str:
+    t = clean_text(text)
+    if not t:
+        return ""
+
+    tl = t.lower()
+    tl = tl.replace("\\", "/")
+    tl = tl.replace(" ", "")
+    tl = tl.replace("1", "l")
+    tl = tl.replace("37°c", "37c")
+    tl = tl.replace("37oc", "37c")
+    tl = tl.replace("37 c", "37c")
+
+    mapping = {
+        "mmol/l": "mmol/L",
+        "mml/l": "mmol/L",
+        "mmo/l": "mmol/L",
+        "umol/l": "umol/L",
+        "μmol/l": "umol/L",
+        "ug/l": "ug/L",
+        "mg/l": "mg/L",
+        "g/l": "g/L",
+        "ui/l": "UI/L",
+        "u/l": "UI/L",
+        "ui/l37c": "UI/L37c",
+        "u/l37c": "UI/L37c",
+        "ui/137c": "UI/L37c",
+        "uil/37c": "UI/L37c",
+        "ui/l/37c": "UI/L37c",
+    }
+
+    for k, v in mapping.items():
+        if tl == k:
+            return v
+
+    return clean_text(text)
 
 
 def is_metadata_line(line: str) -> bool:
@@ -92,31 +201,49 @@ def sanitize_columns(cols):
     return out
 
 
-def is_biochemistry_table_output(core_lines):
-    """Detect if the core table contains biochemistry data"""
-    joined = " ".join(core_lines)
+def is_biochemistry_table_output(lines):
+    joined = " ".join(lines)
     j = norm(joined)
-    
+
     biochem_markers = [
-        "sodium", "potassium", "chlore", "bicarbonates",
-        "proteines plasmatiques", "uree", "creatinine", "glycemie",
-        "phosphatases alcalines", "bilirubine", "asat", "alat", "ggt",
-        "prealbumine", "hemolyse", "lipemie"
+        "hemolyse",
+        "ictere",
+        "lipemie",
+        "sodium",
+        "potassium",
+        "chlore",
+        "bicarbonates",
+        "proteines plasmatiques",
+        "uree",
+        "creatinine",
+        "glycemie",
+        "phosphatases alcalines",
+        "bilirubine",
+        "asat",
+        "alat",
+        "ggt",
+        "prealbumine",
+        "crp",
+        "procalcitonine",
+        "ldh",
+        "haptoglobine",
     ]
-    
+
     hits = sum(1 for m in biochem_markers if m in j)
-    return hits >= 3
+
+    if hits >= 3 and any(x in j for x in ["hemolyse", "ictere", "lipemie"]):
+        return True
+
+    return hits >= 4
 
 
 def fix_merged_result_unit_hematology(row):
-    """Fix merged columns for hematology tables (4 columns: desc|result|unit|normal)"""
     row = sanitize_columns(row)
     if len(row) < 5:
         row = row + [""] * (5 - len(row))
 
     desc, result, unit, normal, val = row[:5]
 
-    # Case 1: desc + qualitative result merged
     if desc and not result:
         m = re.match(
             r"^(.*?)(?:\s+)(non|oui|pos|neg|positive|negative|positif|negatif|inc|ano|bl|date jour)$",
@@ -127,7 +254,6 @@ def fix_merged_result_unit_hematology(row):
             desc = clean_text(m.group(1))
             result = clean_text(m.group(2))
 
-    # Case 2: desc + numeric result merged
     if desc and not result:
         m = re.match(r"^(.*?)(?:\s+)([-+]?\d+(?:[.,]\d+)?[+-]?)$", desc)
         if m:
@@ -137,7 +263,6 @@ def fix_merged_result_unit_hematology(row):
                 desc = left
                 result = num
 
-    # Case 3: result + unit merged
     if result and not unit:
         m = re.match(r"^([-+]?\d+(?:[.,]\d+)?[+-]?)\s*(.*)$", result)
         if m:
@@ -147,43 +272,32 @@ def fix_merged_result_unit_hematology(row):
                 result = maybe_num
                 unit = maybe_unit
 
-    unit = unit.replace("g/di", "g/dl")
-    unit = unit.replace("ux3", "μ×3")
-    unit = unit.replace("UI/I37c", "UI/L37c")
-    unit = unit.replace("UI/137c", "UI/L37c")
-    unit = unit.replace("UI/I", "UI/L")
-    unit = unit.replace("ui/l", "UI/L")
-    unit = unit.replace("umol/i", "umol/L")
-    unit = unit.replace("mml/l", "mmol/L")
     if unit == "g/":
         unit = "g/L"
 
+    unit = sanitize_hematology_unit(unit)
+    normal = sanitize_hematology_normal(normal)
+
     if val in JUNK_TOKENS:
         val = ""
+    else:
+        val = sanitize_hematology_normal(val)
 
     return [desc, result, unit, normal, val]
 
 
 def fix_merged_result_unit_biochemistry(row):
-    """Fix merged columns for biochemistry tables (5 columns: desc|result|unit|ref_min|ref_max)"""
     row = sanitize_columns(row)
     if len(row) < 5:
         row = row + [""] * (5 - len(row))
 
     desc, result, unit, ref_min, ref_max = row[:5]
 
-    # Remove junk from ref columns
-    if ref_max in JUNK_TOKENS:
-        ref_max = ""
+    result = normalize_biochem_result(result)
+    unit = sanitize_biochemistry_unit(unit)
 
-    # Normalize units
-    unit = unit.replace("ui/l", "UI/L")
-    unit = unit.replace("UI/137C", "UI/L37c")
-    unit = unit.replace("UI/137c", "UI/L37c")
-    unit = unit.replace("umol/l", "umol/L")
-    unit = unit.replace("μmol/l", "umol/L")
-    unit = unit.replace("g/dl", "g/L")
-    unit = unit.replace("mmol/l", "mmol/L")
+    ref_min = clean_text(ref_min)
+    ref_max = clean_text(ref_max)
 
     return [desc, result, unit, ref_min, ref_max]
 
@@ -195,8 +309,20 @@ def parse_hybrid_file(path: Path):
     upper = []
     core = []
     lower = []
+    metadata = {
+        "classic_hematology_page": None,
+        "biochemistry_table_page": None,
+    }
 
     for line in text:
+        if line.startswith("Classic hematology page:"):
+            metadata["classic_hematology_page"] = line.split(":", 1)[1].strip().lower() == "true"
+            continue
+
+        if line.startswith("Biochemistry table page:"):
+            metadata["biochemistry_table_page"] = line.split(":", 1)[1].strip().lower() == "true"
+            continue
+
         if line.startswith("=== UPPER SECTION"):
             section = "upper"
             continue
@@ -235,20 +361,18 @@ def parse_hybrid_file(path: Path):
         elif section == "lower":
             lower.append(line)
 
-    return upper, core, lower
+    return upper, core, lower, metadata
 
 
 def parse_pipe_row(line: str, is_biochemistry: bool = False):
     parts = [clean_text(x) for x in line.split("|")]
-    
+
     if is_biochemistry:
-        # Ensure 5 columns for biochemistry
         row = parts[:5] + [""] * max(0, 5 - len(parts[:5]))
         return fix_merged_result_unit_biochemistry(row[:5])
-    else:
-        # Ensure 5 columns for hematology
-        row = parts[:5] + [""] * max(0, 5 - len(parts[:5]))
-        return fix_merged_result_unit_hematology(row[:5])
+
+    row = parts[:5] + [""] * max(0, 5 - len(parts[:5]))
+    return fix_merged_result_unit_hematology(row[:5])
 
 
 def is_obvious_garbage_row(desc: str, result: str, unit: str, normal: str, val: str) -> bool:
@@ -281,14 +405,14 @@ def count_nonempty(row):
 
 
 def has_numeric_value(text: str) -> bool:
-    return bool(re.search(r"\d+[.,]\d+|\b\d+\b", text))
+    return bool(re.search(r"[<>]?\s*\d+(?:[.,]\d+)?[+-]?", clean_text(text)))
 
 
 def has_known_unit(text: str) -> bool:
     return bool(
         re.search(
             r"%|g/dl|g/100ml|pg/hematie|10x3/mm3|10x6/mm3|/mm3|/mm³|μx3|ux3|μ×3|"
-            r"mmhg|mmol/l|umol/l|ui/l|ml/100|g pour 100 ml|g/l",
+            r"mmhg|mmol/l|umol/l|ui/l|ui/l37c|ug/l|mg/l|ml/100|g pour 100 ml|g/l",
             text,
             re.I,
         )
@@ -298,17 +422,54 @@ def has_known_unit(text: str) -> bool:
 def has_qualitative_value(text: str) -> bool:
     return bool(
         re.search(
-            r"\b(non|oui|pos|neg|positive|negative|positif|negatif|ano|bl|inc|date jour)\b",
+            r"\b(non|oui|pos|neg|positive|negative|positif|negatif|ano|bl|inc|date jour|opa)\b",
             text,
             re.I,
         )
     )
 
 
+def looks_like_hematology_unit(text: str) -> bool:
+    t = clean_text(text)
+    return bool(
+        re.fullmatch(
+            r"(%|g/dl|g/100ml|pg/hematie|10x3/mm3|10x6/mm3|/mm3|/mm³|μx3|ux3|μ×3)",
+            t,
+            re.I,
+        )
+    )
+
+
+def looks_like_comment_blob(text: str) -> bool:
+    t = clean_text(text)
+    nt = norm(t)
+
+    if not t:
+        return False
+
+    morphology_words = [
+        "anisocytose",
+        "polychromatophilie",
+        "anisochromie",
+        "poikilocytose",
+        "absence d'anomalies notables",
+        "absence d anomalies notables",
+    ]
+
+    if any(w in nt for w in morphology_words):
+        return True
+
+    if len(t.split()) >= 4:
+        return True
+
+    return False
+
+
 def is_known_biochem_analyte(text: str) -> bool:
     t = norm(clean_text(text))
     known = [
         "hemolyse",
+        "ictere",
         "lipemie",
         "sodium",
         "potassium",
@@ -326,8 +487,25 @@ def is_known_biochem_analyte(text: str) -> bool:
         "alat",
         "ggt",
         "prealbumine",
+        "crp",
+        "procalcitonine",
+        "ldh",
+        "haptoglobine",
     ]
     return any(k == t or k in t for k in known)
+
+
+def is_known_biochem_note_label(text: str) -> bool:
+    t = norm(clean_text(text))
+    known = {
+        "resultat controle",
+        "resultat controle.",
+        "resultat telephone",
+        "resultat telephone.",
+        ":antibiotherapie (oui/non)",
+        "antibiotherapie (oui/non)",
+    }
+    return t in known
 
 
 def row_has_table_shape(row):
@@ -344,27 +522,34 @@ def row_has_table_shape(row):
     if not desc:
         return False
 
-    # keep known biochemistry analytes even if OCR missed the rest
-    if is_known_biochem_analyte(desc):
-        return True
+    if is_known_biochem_note_label(desc):
+        return False
 
-    # Strongest case: description + some actual value-like content
+    if is_known_biochem_analyte(desc):
+        if result or unit or normal or val:
+            return True
+        if norm(desc) in {"hemolyse", "ictere", "lipemie"}:
+            return True
+
     if result:
         if has_numeric_value(result) or has_qualitative_value(result):
             return True
         if unit or normal or val:
             return True
 
-    # Description + unit/reference often still indicates a lab row
     if unit and (has_known_unit(unit) or has_known_unit(desc)):
         return True
 
     if normal and has_numeric_value(normal):
         return True
 
-    # Multi-column structured row
-    if nonempty >= 3:
+    if val and has_numeric_value(val):
         return True
+
+    if nonempty >= 3:
+        if result and (has_numeric_value(result) or has_qualitative_value(result)):
+            if not unit or has_known_unit(unit):
+                return True
 
     return False
 
@@ -372,22 +557,16 @@ def row_has_table_shape(row):
 def row_looks_like_note(row):
     desc, result, unit, normal, val = row
     joined = clean_text(" ".join([desc, result, unit, normal, val]))
-    joined_norm = norm(joined)
 
-    # sentence-like or comment-like text
+    if is_known_biochem_note_label(desc):
+        return True
+
     word_count = len(joined.split())
     long_sentence = word_count >= 6 and not unit and not normal
-
-    # broken symbolic spill
     weird_symbols = bool(re.search(r"[一□■☑✔✗✘]", joined))
-
-    # isolated narrative-style equality/comment line
     eq_comment = "=" in joined and not unit and not normal
-
-    # if desc exists but row is weakly structured, treat as note
     weak_structure = not row_has_table_shape(row)
 
-    # classic comment rows often have one long desc and almost no clean split
     if long_sentence:
         return True
     if weird_symbols and weak_structure:
@@ -398,7 +577,7 @@ def row_looks_like_note(row):
     return False
 
 
-def classify_row(row):
+def classify_row(row, is_biochemistry: bool):
     desc, result, unit, normal, val = row
 
     if is_obvious_garbage_row(desc, result, unit, normal, val):
@@ -414,6 +593,20 @@ def classify_row(row):
     if is_section_title(joined):
         return "section"
 
+    if is_biochemistry and is_known_biochem_note_label(desc):
+        return "note"
+
+    if not is_biochemistry:
+        dn = norm(desc)
+
+        if "anomalies morph" in dn:
+            if clean_text(unit) and not looks_like_hematology_unit(unit):
+                if looks_like_comment_blob(unit):
+                    return "note"
+
+            if clean_text(normal) and looks_like_comment_blob(normal):
+                return "note"
+
     if row_looks_like_note(row):
         return "note"
 
@@ -427,7 +620,6 @@ def force_morphology_rows(table_rows, note_lines):
     def n(x):
         return " ".join(str(x).lower().split())
 
-    # Look at all page content already collected by the cleaner
     all_text = " ".join(
         [" ".join([str(c) for c in row if clean_text(c)]) for row in table_rows] + note_lines
     )
@@ -471,7 +663,9 @@ def force_morphology_rows(table_rows, note_lines):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Final cleanup for hybrid table parser output - supports both hematology and biochemistry")
+    parser = argparse.ArgumentParser(
+        description="Final cleanup for hybrid table parser output - supports both hematology and biochemistry"
+    )
     parser.add_argument("hybrid_txt", help="Path to hybrid parser txt file")
     parser.add_argument(
         "--output-dir",
@@ -484,10 +678,14 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    upper, core, lower = parse_hybrid_file(hybrid_txt)
+    upper, core, lower, metadata = parse_hybrid_file(hybrid_txt)
 
-    # Detect if this is a biochemistry table
-    is_biochemistry = is_biochemistry_table_output(core)
+    if metadata["biochemistry_table_page"] is True:
+        is_biochemistry = True
+    elif metadata["classic_hematology_page"] is True:
+        is_biochemistry = False
+    else:
+        is_biochemistry = is_biochemistry_table_output(upper + core + lower)
 
     final_rows = []
     notes = []
@@ -505,7 +703,7 @@ def main():
             else:
                 row = fix_merged_result_unit_hematology([line, "", "", "", ""])
 
-        kind = classify_row(row)
+        kind = classify_row(row, is_biochemistry=is_biochemistry)
 
         if kind == "garbage":
             return
@@ -550,19 +748,18 @@ def main():
             dedup_notes.append(n)
 
     out_file = out_dir / f"{hybrid_txt.stem}_final.txt"
-    
-    # Only apply morphology forcing for hematology tables
+
     if not is_biochemistry:
         dedup_rows, dedup_notes = force_morphology_rows(dedup_rows, dedup_notes)
-    
+
     with open(out_file, "w", encoding="utf-8") as f:
         f.write("=== FINAL TABLE ===\n\n")
-        
+
         if is_biochemistry:
             f.write("Description | Résultat | Unité | Valeurs normales (min) | Valeurs normales (max)\n")
         else:
             f.write("Description | Résultat | Unité | Valeurs normales | Val.\n")
-        
+
         for row in dedup_rows:
             f.write(" | ".join(row) + "\n")
 
