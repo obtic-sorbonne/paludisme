@@ -65,6 +65,41 @@ def run_cmd_soft(cmd: list[str], log_lines: list[str], cwd: Path | None = None):
     return ok, result.returncode
 
 
+def run_anonymization_on_merged_output(
+    merged_txt_path: Path,
+    doc_out_dir: Path,
+    log_lines: list[str],
+):
+    anonymized_txt_path = doc_out_dir / "merged_final_output_anonymized.txt"
+
+    cmd = [
+        "python",
+        "-m",
+        "anonymization.test_single_file",
+        str(merged_txt_path),
+        "-o",
+        str(anonymized_txt_path),
+    ]
+
+    cmd_str = " ".join(cmd)
+    print(f"\n[RUN] {cmd_str}", flush=True)
+    log_lines.append(f"$ {cmd_str}")
+
+    result = subprocess.run(
+        cmd,
+        cwd=str(ROOT_DIR),
+        text=True,
+    )
+
+    if result.returncode != 0:
+        warning = f"[WARNING] Anonymization failed ({result.returncode}) for {merged_txt_path.name}"
+        print(warning, flush=True)
+        log_lines.append(warning)
+        return None, None
+
+    repl_path = anonymized_txt_path.with_suffix(".replacements.txt")
+    return anonymized_txt_path, repl_path
+
 def extract_page_num_from_route_name(path: Path) -> int | None:
     m = re.search(r"_(\d+)_(\d+)_res_route\.json$", path.name)
     if not m:
@@ -396,12 +431,23 @@ def main():
 
     merged_txt_path.write_text(merged_txt, encoding="utf-8")
     save_json(merged_json_path, merged_json)
-    log_path.write_text("\n".join(log_lines), encoding="utf-8")
 
     print(f"Saved merged TXT:  {merged_txt_path}")
     print(f"Saved merged JSON: {merged_json_path}")
-    print(f"Saved log:         {log_path}")
 
+    anonymized_txt_path, repl_path = run_anonymization_on_merged_output(
+        merged_txt_path=merged_txt_path,
+        doc_out_dir=doc_out_dir,
+        log_lines=log_lines,
+    )
+
+    if anonymized_txt_path:
+        print(f"Saved anonymized TXT: {anonymized_txt_path}")
+    if repl_path and repl_path.exists():
+        print(f"Saved replacements:   {repl_path}")
+
+    log_path.write_text("\n".join(log_lines), encoding="utf-8")
+    print(f"Saved log:            {log_path}")
 
 if __name__ == "__main__":
     main()

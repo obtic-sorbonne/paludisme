@@ -13,7 +13,7 @@ source env_paddle/bin/activate
 export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 
 echo "=============================="
-echo "Unified document pipeline"
+echo "Unified document + anonymization pipeline"
 echo "Processing PDF: $PDF"
 echo "DOC_STEM: $(basename "$PDF" .pdf)"
 echo "=============================="
