@@ -30,7 +30,7 @@ def strip_accents_basic(s: str) -> str:
 
 def norm(s: str) -> str:
     s = clean_text(s)
-    s = s.replace("：", ":").replace("'", "'").replace("−", "-")
+    s = s.replace("：", ":").replace("’", "'").replace("−", "-")
     s = s.replace("≥", ">=").replace("≤", "<=")
     s = strip_accents_basic(s).lower()
     return clean_text(s)
@@ -71,18 +71,11 @@ def extract_page_block(lines: list[str], page_num: int) -> list[str]:
     return [x for x in page_lines if x]
 
 
-# ---------------------------------------------------------------------------
-# MARKER DETECTION
-# ---------------------------------------------------------------------------
-# Selected markers:   X, x, ×, •, ®, ©  (filled radio/checkbox in OCR)
-# Unselected markers: O, o, □, C         (empty radio/checkbox in OCR)
-# Zero digit '0' at start of option line = unselected (OCR artefact)
-
 SELECTED_CHARS = {"X", "x", "×", "•"}
 UNSELECTED_CHARS = {"O", "o", "□", "C"}
 
+
 def _marker_type(ch: str) -> str | None:
-    """Return 'X', 'O', or None for a single character."""
     if ch in SELECTED_CHARS:
         return "X"
     if ch in UNSELECTED_CHARS:
@@ -91,10 +84,6 @@ def _marker_type(ch: str) -> str | None:
 
 
 def is_lone_marker(line: str) -> str | None:
-    """
-    Return 'X' or 'O' if *line* is just a selection marker on its own,
-    e.g. '•', 'X', 'O', '©'.  Return None otherwise.
-    """
     s = clean_text(line)
     if len(s) == 1:
         return _marker_type(s)
@@ -102,23 +91,10 @@ def is_lone_marker(line: str) -> str | None:
 
 
 def split_embedded_markers(line: str):
-    """
-    Parse a single OCR line into (marker, text) pairs.
-
-    Handles:
-      '• F'            -> [('X', 'F')]
-      'X Oui'          -> [('X', 'Oui')]
-      'O NSP'          -> [('O', 'NSP')]
-      '0 2 sem'        -> [('O', '2 sem')]   # digit-zero = unselected
-      'ONSP'           -> [('O', 'NSP')]
-      'Urbain strictX Rural' -> [(None,'Urbain strict'),('X','Rural')]
-      'plain text'     -> [(None, 'plain text')]
-    """
     line = clean_text(line)
     if not line:
         return []
 
-    # --- Case 1: line starts with a known marker char (possibly followed by space) ---
     first = line[0]
     mt = _marker_type(first)
     if mt is not None:
@@ -128,18 +104,15 @@ def split_embedded_markers(line: str):
             rest = "Oui"
         if rest:
             return [(mt, rest)]
-        # lone marker char — handled separately by caller via is_lone_marker
         return [(mt, "")]
 
-    # --- Case 2: digit zero at start = unselected radio ---
     m = re.match(r"^0\s+(.+)$", line)
     if m:
         return [("O", clean_text(m.group(1)))]
 
-    # --- Case 3: embedded marker inside line (e.g. 'Urbain strictX Rural') ---
     parts = re.split(
         r'(?<=[a-z0-9éèêàùîïôç])\s*([XxOo×•])\s*(?=[A-ZÀ-Ü0-9><=])',
-        line
+        line,
     )
 
     if len(parts) == 1:
@@ -163,17 +136,8 @@ def split_embedded_markers(line: str):
 
 
 def postprocess_lines(lines: list[str], replacements: list[tuple[str, str]] | None = None) -> list[str]:
-    """
-    Clean lines and resolve *orphaned* lone markers.
-
-    When a line is just a marker (•, X, O …) and the next non-empty line is
-    a plain option text, merge them: the marker becomes the prefix of the
-    next line.
-    """
     replacements = replacements or []
-    cleaned = []
 
-    # Apply replacements first
     replaced = []
     for line in lines:
         line = clean_text(line)
@@ -181,20 +145,16 @@ def postprocess_lines(lines: list[str], replacements: list[tuple[str, str]] | No
             line = line.replace(a, b)
         replaced.append(clean_text(line))
 
-    # Split embedded markers
     expanded = []
     for line in replaced:
         for pair in split_embedded_markers(line):
             expanded.append(pair)
 
-    # Resolve orphaned lone markers
-    # e.g. [('X', ''), (None, 'P falciparum')] -> [('X', 'P falciparum')]
     resolved = []
     i = 0
     while i < len(expanded):
         marker, text = expanded[i]
         if marker is not None and text == "":
-            # This was a lone marker — apply to next meaningful line
             j = i + 1
             while j < len(expanded) and expanded[j][1] == "":
                 j += 1
@@ -202,20 +162,16 @@ def postprocess_lines(lines: list[str], replacements: list[tuple[str, str]] | No
                 resolved.append((marker, expanded[j][1]))
                 i = j + 1
                 continue
-        i_pair = (marker, text)
-        resolved.append(i_pair)
+        resolved.append((marker, text))
         i += 1
 
-    # Build final list, deduplicate consecutive identical lines
+    cleaned = []
     prev = None
     for marker, text in resolved:
         text = clean_text(text)
         if not text:
             continue
-        if marker:
-            out_line = f"{marker} {text}"
-        else:
-            out_line = text
+        out_line = f"{marker} {text}" if marker else text
         if out_line == prev:
             continue
         cleaned.append(out_line)
@@ -225,16 +181,6 @@ def postprocess_lines(lines: list[str], replacements: list[tuple[str, str]] | No
 
 
 def parse_prefix_and_text(line: str):
-    """
-    Return (marker, rest) where marker is 'X', 'O', or None.
-
-    Recognises:
-      '• Oui'  -> ('X', 'Oui')
-      'X Oui'  -> ('X', 'Oui')
-      'O Non'  -> ('O', 'Non')
-      '0 2 sem'-> ('O', '2 sem')
-      'Oui'    -> (None, 'Oui')
-    """
     raw = clean_text(line)
     if not raw:
         return None, raw
@@ -248,9 +194,8 @@ def parse_prefix_and_text(line: str):
             rest = "Oui"
         if rest:
             return mt, rest
-        return mt, raw  # lone marker — keep raw
+        return mt, raw
 
-    # digit-zero prefix
     m = re.match(r"^0\s+(.+)$", raw)
     if m:
         return "O", clean_text(m.group(1))
@@ -270,19 +215,15 @@ def line_select_state(line: str):
 def text_matches_option(candidate_text: str, option_variant: str) -> bool:
     c = norm(candidate_text)
     o = norm(option_variant)
-
     if c == o:
         return True
 
     cc = compact_norm(candidate_text)
     oc = compact_norm(option_variant)
-
     if cc == oc:
         return True
-
     if len(oc) >= 3 and (cc.startswith(oc) or oc in cc):
         return True
-
     return False
 
 
@@ -398,29 +339,9 @@ def postprocess_single_choice(option_results):
 
 
 def apply_elimination_heuristic(option_results: list, single_choice: bool) -> list:
-    """
-    For single-choice fields where the OCR drops the filled radio button glyph
-    entirely (rendering the selected option as plain text with no prefix),
-    use process-of-elimination:
-
-    If NO option is currently selected, but exactly ONE option has
-    decision_source == 'plain_text_only' while ALL other found options have
-    an explicit 'O' prefix (ocr_prefix_O = unselected), then that lone
-    plain-text option must be the selected one.
-
-    Also handles the case where ALL found options are plain_text_only but
-    there is exactly one of them — common when the OCR drops all markers
-    but the section only contains a single matching option line.
-
-    This is safe because:
-      - Empty circles are reliably rendered as 'O' by the OCR
-      - Only filled circles are silently dropped
-      - So the one without an explicit O = the filled one
-    """
     if not single_choice:
         return option_results
 
-    # Already have a confident selection — don't interfere
     if any(x.get("selected") for x in option_results):
         return option_results
 
@@ -428,23 +349,16 @@ def apply_elimination_heuristic(option_results: list, single_choice: bool) -> li
     if not found_options:
         return option_results
 
-    explicit_o   = [x for x in found_options if x.get("decision_source") == "ocr_prefix_O"]
-    plain_only   = [x for x in found_options if x.get("decision_source") == "plain_text_only"]
-    explicit_x   = [x for x in found_options if x.get("decision_source") == "ocr_prefix_X"]
+    explicit_o = [x for x in found_options if x.get("decision_source") == "ocr_prefix_O"]
+    plain_only = [x for x in found_options if x.get("decision_source") == "plain_text_only"]
+    explicit_x = [x for x in found_options if x.get("decision_source") == "ocr_prefix_X"]
 
-    # Don't apply if there's any explicit X already (postprocess_single_choice
-    # should have handled that, but be safe)
     if explicit_x:
         return option_results
 
     candidate = None
-
-    # Case 1: exactly one plain-text option, all others explicitly O
     if len(plain_only) == 1 and len(explicit_o) == len(found_options) - 1:
         candidate = plain_only[0]
-
-    # Case 2: exactly one found option total and it's plain text
-    # (section found, one match, no marker at all)
     elif len(found_options) == 1 and len(plain_only) == 1:
         candidate = plain_only[0]
 

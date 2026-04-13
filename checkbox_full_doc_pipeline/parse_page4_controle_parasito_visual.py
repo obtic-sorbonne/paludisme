@@ -3,10 +3,9 @@ import argparse
 import json
 import re
 
+import cv2
+import numpy as np
 
-# --------------------------------------------------
-# Basic helpers
-# --------------------------------------------------
 
 def clean_text(s: str) -> str:
     s = str(s).replace("\xa0", " ").strip()
@@ -49,15 +48,11 @@ def load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-# --------------------------------------------------
-# OCR JSON loading
-# --------------------------------------------------
-
 def extract_page_words(data: dict, page_num: int = 1):
     out = []
 
     def add_word(text, box):
-        if not text or not box:
+        if not text or box is None:
             return
 
         if len(box) == 4 and all(isinstance(v, (int, float)) for v in box):
@@ -82,6 +77,8 @@ def extract_page_words(data: dict, page_num: int = 1):
             "y2": float(y2),
             "cx": (float(x1) + float(x2)) / 2.0,
             "cy": (float(y1) + float(y2)) / 2.0,
+            "w": float(x2) - float(x1),
+            "h": float(y2) - float(y1),
         })
 
     if isinstance(data, dict) and "words" in data:
@@ -120,45 +117,8 @@ def extract_page_words(data: dict, page_num: int = 1):
 
         return sorted(out, key=lambda w: (w["y1"], w["x1"]))
 
-    pages = data.get("pages") or data.get("results") or data.get("page_results")
-    if isinstance(pages, list):
-        idx = page_num - 1
-        if 0 <= idx < len(pages):
-            page = pages[idx]
-
-            if isinstance(page, dict):
-                if "rec_texts" in page and "dt_polys" in page:
-                    for txt, box in zip(page["rec_texts"], page["dt_polys"]):
-                        add_word(txt, box)
-                    return sorted(out, key=lambda w: (w["y1"], w["x1"]))
-
-                recs = (
-                    page.get("words")
-                    or page.get("ocr_results")
-                    or page.get("dt_polys")
-                    or page.get("rec_texts")
-                )
-                if isinstance(recs, list):
-                    for item in recs:
-                        if isinstance(item, dict):
-                            txt = item.get("text") or item.get("word_text") or item.get("transcription")
-                            box = item.get("box") or item.get("bbox") or item.get("points") or item.get("poly")
-                            add_word(txt, box)
-                    return sorted(out, key=lambda w: (w["y1"], w["x1"]))
-
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict):
-                txt = item.get("text") or item.get("word_text") or item.get("transcription")
-                box = item.get("box") or item.get("bbox") or item.get("points") or item.get("poly")
-                add_word(txt, box)
-
     return sorted(out, key=lambda w: (w["y1"], w["x1"]))
 
-
-# --------------------------------------------------
-# Search helpers
-# --------------------------------------------------
 
 def text_matches(word_text: str, variants: list[str]) -> bool:
     wt = norm(word_text)
@@ -183,6 +143,25 @@ def find_best_word(words, variants):
     return sorted(candidates, key=lambda w: (w["y1"], w["x1"]))[0]
 
 
+def find_word_near(words, variants, x1=None, x2=None, y1=None, y2=None):
+    cands = []
+    for w in words:
+        if x1 is not None and w["x2"] < x1:
+            continue
+        if x2 is not None and w["x1"] > x2:
+            continue
+        if y1 is not None and w["y2"] < y1:
+            continue
+        if y2 is not None and w["y1"] > y2:
+            continue
+        if text_matches(w["text"], variants):
+            cands.append(w)
+
+    if not cands:
+        return None
+    return sorted(cands, key=lambda w: (w["y1"], w["x1"]))[0]
+
+
 def window_words(words, x1=None, y1=None, x2=None, y2=None):
     out = []
     for w in words:
@@ -198,18 +177,14 @@ def window_words(words, x1=None, y1=None, x2=None, y2=None):
     return out
 
 
-# --------------------------------------------------
-# Marker helpers
-# --------------------------------------------------
-
 def token_is_selected_marker_only(w) -> bool:
     s = clean_text(w["text"])
-    return s in {"X", "x", "×"}
+    return s in {"X", "x", "×", "☒", "☑", "■", "█", "▪", "▣"}
 
 
 def token_is_unselected_marker_only(w) -> bool:
     s = clean_text(w["text"])
-    return s in {"O", "o", "□"}
+    return s in {"O", "o", "□", "○", "◯", "◻", "◽"}
 
 
 def merged_token_selection_for_variants(word_text: str, variants: list[str]):
@@ -225,7 +200,7 @@ def merged_token_selection_for_variants(word_text: str, variants: list[str]):
             prefix = n[:len(n) - len(vn)].strip()
             if prefix in {"x", "×"}:
                 return "X"
-            if prefix in {"o", "□"}:
+            if prefix in {"o", "□", "○", "◯"}:
                 return "O"
 
         cn = compact_norm(raw)
@@ -258,7 +233,89 @@ def find_left_marker(row_words, option_word, x_gap_max=65, y_pad=12):
     return None
 
 
-def detect_option_selected(row_words, option_word, variants, x_gap_max=65, y_pad=12):
+def crop_box(img_bgr, box):
+    if img_bgr is None:
+        return None
+
+    h, w = img_bgr.shape[:2]
+    x1, y1, x2, y2 = [int(round(v)) for v in box]
+
+    x1 = max(0, min(x1, w - 1))
+    x2 = max(0, min(x2, w))
+    y1 = max(0, min(y1, h - 1))
+    y2 = max(0, min(y2, h))
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    return img_bgr[y1:y2, x1:x2].copy()
+
+
+def build_left_checkbox_box(option_word, x_gap_max=120, y_pad=22):
+    return [
+        option_word["x1"] - x_gap_max,
+        option_word["y1"] - y_pad,
+        option_word["x1"] - 2,
+        option_word["y2"] + y_pad,
+    ]
+
+
+def score_checkbox_crop(crop_bgr):
+    if crop_bgr is None or crop_bgr.size == 0:
+        return {
+            "state": "unknown",
+            "dark_ratio": 0.0,
+            "largest_area": 0,
+            "component_count": 0,
+        }
+
+    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    _, th = cv2.threshold(blur, 185, 255, cv2.THRESH_BINARY_INV)
+
+    h, w = th.shape[:2]
+    if h > 6 and w > 6:
+        inner = th[2:h - 2, 2:w - 2]
+    else:
+        inner = th
+
+    total = float(max(1, inner.shape[0] * inner.shape[1]))
+    dark_ratio = float(np.count_nonzero(inner)) / total
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(inner, connectivity=8)
+    areas = []
+    for i in range(1, num_labels):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area >= 3:
+            areas.append(area)
+
+    largest_area = max(areas) if areas else 0
+    component_count = len(areas)
+
+    if dark_ratio >= 0.06 or largest_area >= 14:
+        state = "selected"
+    elif dark_ratio >= 0.012 or largest_area >= 5:
+        state = "unselected"
+    else:
+        state = "unknown"
+
+    return {
+        "state": state,
+        "dark_ratio": round(dark_ratio, 4),
+        "largest_area": largest_area,
+        "component_count": component_count,
+    }
+
+
+def detect_checkbox_or_marker_selected(
+    row_words,
+    option_word,
+    variants,
+    img_bgr=None,
+    x_gap_max=110,
+    y_pad=22,
+):
     marker = find_left_marker(row_words, option_word, x_gap_max=x_gap_max, y_pad=y_pad)
     if marker == "X":
         return True
@@ -271,7 +328,15 @@ def detect_option_selected(row_words, option_word, variants, x_gap_max=65, y_pad
     if merged == "O":
         return False
 
-    return False
+    if img_bgr is not None:
+        crop = crop_box(img_bgr, build_left_checkbox_box(option_word, x_gap_max=x_gap_max, y_pad=y_pad))
+        score = score_checkbox_crop(crop)
+        if score["state"] == "selected":
+            return True
+        if score["state"] == "unselected":
+            return False
+
+    return None
 
 
 def closest_numeric_temperature(row_words, row_anchor, next_row_cy=None, x_min=None, x_max=None, max_row_dist=22):
@@ -300,16 +365,14 @@ def closest_numeric_temperature(row_words, row_anchor, next_row_cy=None, x_min=N
     return best["text"].replace(".", ",")
 
 
-# --------------------------------------------------
-# Main parser
-# --------------------------------------------------
-
-def parse_controle_block(words):
+def parse_controle_block(words, img_bgr=None):
     result = {
         "field": "Contrôle parasitologique P falciparum",
         "found": False,
         "control_overall": None,
-        "rows": []
+        "rows": [],
+        "commentaires_remarques": None,
+        "perdu_de_vue": None,
     }
 
     control_anchor = find_best_word(
@@ -329,7 +392,7 @@ def parse_controle_block(words):
     ]
 
     paras_specs = [
-        ("Absence", ["absence"]),
+        ("Absence", ["absence", "bsence"]),
         ("Trophos", ["trophos"]),
         ("Gaméto seuls", ["gaméto seuls", "gameto seuls", "gamétoseuls", "gametoseuls"]),
     ]
@@ -345,7 +408,7 @@ def parse_controle_block(words):
         x1=control_anchor["x1"] - 40,
         x2=control_anchor["x1"] + 1040,
         y1=control_anchor["y2"] - 5,
-        y2=control_anchor["y2"] + 260,
+        y2=control_anchor["y2"] + 340,
     )
 
     rows_found = []
@@ -361,33 +424,33 @@ def parse_controle_block(words):
     order_rank = {name: i for i, name in enumerate(expected_order)}
     rows_found = sorted(rows_found, key=lambda x: (order_rank.get(x[0], 999), x[1]["cy"]))
 
-    # -----------------------------
-    # Overall Oui / Non
-    # -----------------------------
     near_heading = window_words(
         words,
         x1=control_anchor["x1"] - 10,
-        x2=control_anchor["x1"] + 400,
+        x2=control_anchor["x1"] + 420,
         y1=control_anchor["y1"] - 10,
         y2=control_anchor["y2"] + 45,
     )
 
     for w in near_heading:
         if text_matches(w["text"], ["Oui"]):
-            if detect_option_selected(near_heading, w, ["Oui"], x_gap_max=55, y_pad=12):
+            selected = detect_checkbox_or_marker_selected(
+                near_heading, w, ["Oui"], img_bgr=img_bgr, x_gap_max=70, y_pad=18
+            )
+            if selected is True:
                 result["control_overall"] = "Oui"
                 break
 
     if result["control_overall"] is None:
         for w in near_heading:
             if text_matches(w["text"], ["Non"]):
-                if detect_option_selected(near_heading, w, ["Non"], x_gap_max=55, y_pad=12):
+                selected = detect_checkbox_or_marker_selected(
+                    near_heading, w, ["Non"], img_bgr=img_bgr, x_gap_max=70, y_pad=18
+                )
+                if selected is True:
                     result["control_overall"] = "Non"
                     break
 
-    # -----------------------------
-    # Column anchors
-    # -----------------------------
     temp_anchor = find_best_word(words, ["Température", "Temperature", "Fait Température"])
     paras_anchor = find_best_word(words, ["Parasitologie"])
     dens_anchor = find_best_word(words, ["Densité parasitaire", "Densite parasitaire"])
@@ -395,18 +458,15 @@ def parse_controle_block(words):
     temp_x_min = temp_anchor["x1"] - 25 if temp_anchor else None
     temp_x_max = temp_anchor["x2"] + 120 if temp_anchor else None
 
-    paras_x_min = paras_anchor["x1"] - 120 if paras_anchor else None
-    paras_x_max = paras_anchor["x2"] + 190 if paras_anchor else None
+    paras_x_min = paras_anchor["x1"] - 260 if paras_anchor else None
+    paras_x_max = paras_anchor["x2"] + 280 if paras_anchor else None
 
-    dens_x_min = dens_anchor["x1"] - 60 if dens_anchor else None
-    dens_x_max = dens_anchor["x2"] + 180 if dens_anchor else None
+    dens_x_min = dens_anchor["x1"] - 70 if dens_anchor else None
+    dens_x_max = dens_anchor["x2"] + 200 if dens_anchor else None
 
-    # -----------------------------
-    # Parse each row
-    # -----------------------------
     for idx, (row_label, row_anchor) in enumerate(rows_found):
         if idx == 0:
-            row_top = row_anchor["cy"] - 14
+            row_top = row_anchor["cy"] - 18
         else:
             prev_anchor = rows_found[idx - 1][1]
             row_top = (prev_anchor["cy"] + row_anchor["cy"]) / 2.0
@@ -416,7 +476,7 @@ def parse_controle_block(words):
             row_bottom = (row_anchor["cy"] + next_anchor["cy"]) / 2.0
             next_row_cy = next_anchor["cy"]
         else:
-            row_bottom = row_anchor["cy"] + 14
+            row_bottom = row_anchor["cy"] + 22
             next_row_cy = None
 
         row_words = window_words(words, y1=row_top, y2=row_bottom)
@@ -429,9 +489,32 @@ def parse_controle_block(words):
             "densite_parasitaire": []
         }
 
-        # -----------------------------
-        # Temperature
-        # -----------------------------
+        row_near_words = [w for w in row_words if abs(w["cy"] - row_anchor["cy"]) <= 20]
+
+        row_oui_word = None
+        row_non_word = None
+
+        for w in row_near_words:
+            if text_matches(w["text"], ["Oui"]):
+                row_oui_word = w
+            elif text_matches(w["text"], ["Non"]):
+                row_non_word = w
+
+        explicit_fait = None
+        if row_oui_word:
+            sel = detect_checkbox_or_marker_selected(
+                row_near_words, row_oui_word, ["Oui"], img_bgr=img_bgr, x_gap_max=105, y_pad=20
+            )
+            if sel is True:
+                explicit_fait = "Oui"
+
+        if explicit_fait is None and row_non_word:
+            sel = detect_checkbox_or_marker_selected(
+                row_near_words, row_non_word, ["Non"], img_bgr=img_bgr, x_gap_max=105, y_pad=20
+            )
+            if sel is True:
+                explicit_fait = "Non"
+
         if temp_x_min is not None and temp_x_max is not None:
             temp_words = window_words(row_words, x1=temp_x_min, x2=temp_x_max)
             row["temperature"] = closest_numeric_temperature(
@@ -440,66 +523,116 @@ def parse_controle_block(words):
                 next_row_cy=next_row_cy,
                 x_min=temp_x_min,
                 x_max=temp_x_max,
-                max_row_dist=18,
+                max_row_dist=24,
             )
 
-        # -----------------------------
-        # Parasitologie
-        # -----------------------------
         paras_words = row_words
         if paras_x_min is not None and paras_x_max is not None:
             paras_words = window_words(row_words, x1=paras_x_min, x2=paras_x_max)
 
-        # extra strict vertical filtering around the row center
-        paras_words = [
-            w for w in paras_words
-            if abs(w["cy"] - row_anchor["cy"]) <= 12
-        ]
+        paras_words = [w for w in paras_words if abs(w["cy"] - row_anchor["cy"]) <= 24]
 
         for canonical, variants in paras_specs:
-            opts = [w for w in paras_words if text_matches(w["text"], variants)]
-            for ow in opts:
-                if detect_option_selected(paras_words, ow, variants, x_gap_max=100, y_pad=12):
+            for w in paras_words:
+                if text_matches(w["text"], variants):
                     if canonical not in row["parasitologie"]:
                         row["parasitologie"].append(canonical)
+                    break
 
-        # -----------------------------
-        # Densité parasitaire
-        # -----------------------------
         dens_words = row_words
         if dens_x_min is not None and dens_x_max is not None:
             dens_words = window_words(row_words, x1=dens_x_min, x2=dens_x_max)
 
-        dens_words = [
-            w for w in dens_words
-            if abs(w["cy"] - row_anchor["cy"]) <= 12
-        ]
+        dens_words = [w for w in dens_words if abs(w["cy"] - row_anchor["cy"]) <= 18]
 
         for canonical, variants in dens_specs:
             opts = [w for w in dens_words if text_matches(w["text"], variants)]
             for ow in opts:
-                if detect_option_selected(dens_words, ow, variants, x_gap_max=80, y_pad=12):
-                    if canonical not in row["densite_parasitaire"]:
-                        row["densite_parasitaire"].append(canonical)
+                sel = detect_checkbox_or_marker_selected(
+                    dens_words, ow, variants, img_bgr=img_bgr, x_gap_max=100, y_pad=16
+                )
+                if sel is True and canonical not in row["densite_parasitaire"]:
+                    row["densite_parasitaire"].append(canonical)
 
-        if row["temperature"] or row["parasitologie"] or row["densite_parasitaire"]:
+        if explicit_fait is not None:
+            row["fait"] = explicit_fait
+        elif row["temperature"] or row["parasitologie"] or row["densite_parasitaire"]:
             row["fait"] = "Oui"
         else:
-            row["fait"] = "Non"
+            row["fait"] = None
 
         result["rows"].append(row)
 
+    commentaires_anchor = find_word_near(
+        words,
+        ["Commentaires & Remarques", "Commentaires", "Remarques"],
+        x1=control_anchor["x1"] - 40,
+        x2=control_anchor["x1"] + 900,
+        y1=control_anchor["y1"] + 180,
+        y2=control_anchor["y1"] + 420,
+    )
+
+    perdu_anchor = find_word_near(
+        words,
+        ["Perdu de vue"],
+        x1=control_anchor["x1"] - 80,
+        x2=control_anchor["x1"] + 950,
+        y1=control_anchor["y1"] + 180,
+        y2=control_anchor["y1"] + 480,
+    )
+
+    if commentaires_anchor:
+        comment_words = window_words(
+            words,
+            x1=commentaires_anchor["x1"] - 20,
+            x2=commentaires_anchor["x1"] + 850,
+            y1=commentaires_anchor["y2"] - 5,
+            y2=(perdu_anchor["y1"] - 5) if perdu_anchor else (commentaires_anchor["y2"] + 90),
+        )
+        comment_texts = []
+        for w in sorted(comment_words, key=lambda z: (z["y1"], z["x1"])):
+            txt = clean_text(w["text"])
+            if not txt:
+                continue
+            if text_matches(txt, ["Perdu de vue"]):
+                continue
+            if txt not in comment_texts:
+                comment_texts.append(txt)
+
+        if comment_texts:
+            result["commentaires_remarques"] = " ".join(comment_texts)
+
+    if perdu_anchor:
+        lost_zone = window_words(
+            words,
+            x1=perdu_anchor["x1"] - 160,
+            x2=perdu_anchor["x2"] + 60,
+            y1=perdu_anchor["y1"] - 30,
+            y2=perdu_anchor["y2"] + 30,
+        )
+
+        sel = detect_checkbox_or_marker_selected(
+            lost_zone,
+            perdu_anchor,
+            ["Perdu de vue"],
+            img_bgr=img_bgr,
+            x_gap_max=150,
+            y_pad=26,
+        )
+        if sel is True:
+            result["perdu_de_vue"] = "Oui"
+        elif sel is False:
+            result["perdu_de_vue"] = "Non"
+
     return result
 
-# --------------------------------------------------
-# Main
-# --------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Parse page 4 contrôle parasitologique block from OCR JSON with boxes"
+        description="Parse contrôle parasitologique block from OCR JSON with optional image-based checkbox detection"
     )
     parser.add_argument("ocr_json_path", help="Path to OCR JSON with word boxes")
+    parser.add_argument("--page-image-path", default=None, help="Optional page image for checkbox detection")
     parser.add_argument("--page-num", type=int, default=1)
     parser.add_argument(
         "--output-dir",
@@ -513,10 +646,18 @@ def main():
 
     data = load_json(ocr_json_path)
     words = extract_page_words(data, page_num=args.page_num)
-    result = parse_controle_block(words)
+
+    img_bgr = None
+    if args.page_image_path:
+        img_bgr = cv2.imread(str(args.page_image_path))
+        if img_bgr is None:
+            raise FileNotFoundError(f"Could not read image: {args.page_image_path}")
+
+    result = parse_controle_block(words, img_bgr=img_bgr)
 
     final = {
         "ocr_json_path": str(ocr_json_path),
+        "page_image_path": args.page_image_path,
         "page_num": args.page_num,
         "word_count": len(words),
         "result": result,
@@ -527,6 +668,7 @@ def main():
 
     print(f"Words loaded:       {len(words)}")
     print(f"Saved JSON:         {out_json}")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

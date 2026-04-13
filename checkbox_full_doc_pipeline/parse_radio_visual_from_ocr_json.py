@@ -423,7 +423,6 @@ def parse_radio_field(words, img_bgr, field_key, debug_dir: Path, page_stem: str
         for w in local_words:
             word_box = [w["x1"], w["y1"], w["x2"], w["y2"]]
 
-            # Ignore matches that are basically the heading itself
             if overlap_ratio(word_box, anchor_box) > 0.5:
                 continue
 
@@ -497,7 +496,6 @@ def parse_radio_field(words, img_bgr, field_key, debug_dir: Path, page_stem: str
     explicit_o = [o for o in result["options"] if o.get("text_state") == "unselected_text"]
     strong_selected = [o for o in result["options"] if o.get("state") == "selected_like"]
 
-# evolution_clinique is too noisy visually; prefer topmost plain option
     if field_key == "evolution_clinique" and len(plain) >= 1:
         plain_sorted = sorted(plain, key=lambda o: (o["word_box"][1], o["word_box"][0]))
         result["selected_option"] = plain_sorted[0]["label"]
@@ -511,7 +509,6 @@ def parse_radio_field(words, img_bgr, field_key, debug_dir: Path, page_stem: str
     elif field_key == "etat_clinique" and len(plain) >= 1 and len(explicit_o) >= 1:
         plain_sorted = sorted(plain, key=lambda o: (o["word_box"][1], o["word_box"][0]))
         result["selected_option"] = plain_sorted[0]["label"]
-
 
     dbg = draw_many_boxes(img_bgr, debug_items)
     save_image(debug_dir / f"{page_stem}_{field_key}_debug.png", dbg)
@@ -567,7 +564,7 @@ def main():
         "result": result,
     }
 
-    out_json = out_dir / f"{page_stem}_{args.field_key}_visual.json"
+    out_json = out_dir / f"{ocr_json_path.stem}_{args.field_key}_visual.json"
     out_json.write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"Words loaded: {len(words)}")
