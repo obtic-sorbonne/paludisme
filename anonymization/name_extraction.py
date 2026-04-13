@@ -1,161 +1,140 @@
-"""
-Patient name extraction from structured header fields in medical documents.
-
-Parses names from patterns like:
-  - "de l'enfant NDOUNKE DJATCHEU, MARVIN BRYAN"
-  - "Nom patient  NDOUNKE DJATCHEU, MARVIN BI"
-  - "Patient : NDOUNKE DJATCHEU, MARVIN BRYAN"
-  - "IP0078733\nNDOUNKEDJATCHEU\nMARVIN BRYAN"
-
-Generates all plausible variants (concatenated lastnames, truncated firstnames)
-for thorough replacement.
-"""
-
 import re
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-
-# Regex patterns targeting structured patient name fields.
-# Input is clean text from iterate_items() (no markdown artifacts).
-# Apostrophe may still be missing from OCR at the character level.
-HEADER_PATTERNS = [
-    # "de l'enfant LASTNAME, FIRSTNAME" (apostrophe may be missing from OCR)
-    r"de\s+l[''']?enfant\s+([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
-    # "Nom patient  LASTNAME, FIRSTNAME" or "Nom Patient(e): LASTNAME, FIRSTNAME"
-    # Stop at double-space, tab, or known field labels (Lieu, NPI, Date)
-    r"Nom\s+[Pp]atient(?:e|\(e\))?\s*:?\s+([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+(?:[^\S\n][A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+)*)(?=\s{2,}|\t|\n|$)",
-    # "Patient : LASTNAME, FIRSTNAME" or "Patient : LASTNAME; FIRSTNAME"
-    r"Patient\s*:\s*([A-ZÀ-Ü][A-ZÀ-Ü \-]+[,;]\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
-    # "Patient" on one line, name on next (OCR line break)
-    r"Patient\s*\n+\s*([A-ZÀ-Ü][A-ZÀ-Ü \-]+,\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]+)",
-    # Urgences IP block: IP/1P + lastname on next line, firstname on next
-    r"[I1l]P\d+\s*\n\s*([A-ZÀ-Ü]{3,}(?:[A-ZÀ-Ü]*)?)\s*\n\s*([A-ZÀ-Ü][A-Za-zà-ÿ]+(?:[^\S\n]+[A-ZÀ-Ü][A-Za-zà-ÿ]+)*)",
-    # CRU header: bare barcode (10+ digits) then LASTNAME\nFIRSTNAME on next lines
-    r"\b\d{7,15}\s*\n\s*([A-ZÀ-Ü]{3,})\s*\n\s*([A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+)\s*\n",
-    # CRU header (single-line): barcode LASTNAME FIRSTNAME (then address/postal/Né)
-    # Exclude known false firstname captures: Né, Naiss, Sexe, Age, Tel
-    r"\b\d{7,15}\s+([A-ZÀ-Ü]{3,})\s+([A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+)(?=\s+(?:\d|\())",
-    # CRU footer: "LASTNAME FIRSTNAME du" at end of page
-    r"^([A-ZÀ-Ü]{3,})\s+([A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+)\s+du\s*$",
-    # "LASTNAME FIRSTNAME du\n" followed by date/dossier line
-    r"([A-ZÀ-Ü]{3,})\s+([A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ]+)\s+du\s*\n\s*\d{2}/\d{2}/\d{4}\s+n[°o]",
-]
+IGNORE_TOKENS = {
+    "NOM", "PRÉNOM", "PRENOM", "ETHNICITÉ", "ETHNICITE", "SEXE", "AGE",
+    "NSP", "OUI", "NON", "DATE", "NAISSANCE", "LOCALISATION", "PAYS",
+    "RÉSIDENCE", "RESIDENCE", "DURÉE", "DUREE", "CONSULTATION",
+    "DIAGNOSTIC", "BIOLOGIQUE", "PATIENT", "AFRICAIN", "CAUCASIEN",
+    "ASIATIQUE", "AUTRE", "FRANCE", "METROPOLITAINE", "ACCUEIL",
+    "DÉCONNECTER", "DECONNECTER", "ANNÉE", "ANNEE", "ID", "FICHE",
+    "HOPITAL", "ROBERT", "DEBRE", "SERVICE", "URGENCES", "PARIS",
+    "HEURE", "SIGNATURE",
+}
 
 
 def _normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip())
 
 
-def extract(texts: list[str]) -> Optional[dict]:
-    """
-    Extract patient name from one or more document texts.
-
-    Strategy: one subfolder = one patient. Different documents may have
-    the name at different levels of completeness (lab results truncate
-    firstnames, urgences concatenate lastnames). We scan ALL patterns
-    across ALL documents, take the LONGEST match for firstnames, and
-    prefer separated lastnames from other matches.
-
-    Returns:
-        {
-            "lastnames":     ["NDOUNKE", "DJATCHEU"],
-            "firstnames":    ["MARVIN", "BRYAN"],
-            "all_tokens":    ["NDOUNKE", "DJATCHEU", "MARVIN", "BRYAN"],
-            "full_variants": ["NDOUNKE DJATCHEU, MARVIN BRYAN", ...],
-        }
-        or None if no name found.
-    """
-    all_matches = []
-    for pattern in HEADER_PATTERNS:
-        for text in texts:
-            match = re.search(pattern, text, re.MULTILINE)
-            if match:
-                if match.lastindex and match.lastindex >= 2:
-                    raw = f"{match.group(1)}, {match.group(2)}"
-                else:
-                    raw = match.group(1)
-                all_matches.append(_normalize(raw))
-
-    if not all_matches:
-        return None
-
-    # Parse all matches
-    parsed = [_parse_name(m) for m in all_matches]
-
-    # Take the longest match — most complete firstnames (BRYAN vs BI)
-    best = max(parsed, key=lambda p: len(" ".join(p["firstnames"])))
-
-    # If best has single concatenated lastname (NDOUNKEDJATCHEU), check if
-    # another match has them separated (NDOUNKE DJATCHEU) — prefer separated.
-    if len(best["lastnames"]) == 1:
-        for other in parsed:
-            if len(other["lastnames"]) > 1:
-                # Verify it's the same name concatenated
-                concat = "".join(other["lastnames"])
-                if concat == best["lastnames"][0]:
-                    best["lastnames"] = other["lastnames"]
-                    break
-
-    # Rebuild tokens and variants with merged info
-    best["all_tokens"] = best["lastnames"] + best["firstnames"]
-    best["full_variants"] = _build_variants(best["lastnames"], best["firstnames"])
-
-    logger.info(f"Extracted patient name: {best['lastnames']} {best['firstnames']}")
-    return best
+def _clean_token(tok: str) -> str:
+    return tok.strip(" ,;:.|/-_[](){}*•")
 
 
-def _parse_name(raw: str) -> dict:
-    """Parse a raw name string into structured components."""
-    if "," in raw:
-        last_part, first_part = raw.split(",", 1)
-    else:
-        tokens = raw.split()
-        last_part = " ".join(t for t in tokens if t == t.upper())
-        first_part = " ".join(t for t in tokens if t != t.upper())
-
-    lastnames = [t for t in last_part.split() if len(t.strip()) >= 2]
-    firstnames = [t for t in first_part.split() if len(t.strip()) >= 2]
-    full_variants = _build_variants(lastnames, firstnames)
-
-    return {
-        "lastnames": lastnames,
-        "firstnames": firstnames,
-        "all_tokens": lastnames + firstnames,
-        "full_variants": full_variants,
-    }
+def _is_valid_name_token(tok: str) -> bool:
+    tok = _clean_token(tok)
+    if len(tok) < 1:
+        return False
+    if any(ch.isdigit() for ch in tok):
+        return False
+    if tok.upper() in IGNORE_TOKENS:
+        return False
+    return True
 
 
 def _build_variants(lastnames: list[str], firstnames: list[str]) -> list[str]:
-    """Generate all plausible name variant strings, sorted longest-first."""
     variants = set()
-    ln_str = " ".join(lastnames)
-    fn_str = " ".join(firstnames)
 
-    if lastnames and firstnames:
-        variants.add(f"{ln_str}, {fn_str}")
-        variants.add(f"{ln_str} {fn_str}")
+    ln = " ".join(lastnames).strip()
+    fn = " ".join(firstnames).strip()
 
-    # Concatenated lastnames (OCR artifact: NDOUNKEDJATCHEU)
-    concat = ""
+    if ln and fn:
+        variants.add(f"{ln}, {fn}")
+        variants.add(f"{ln} {fn}")
+
+    if fn:
+        variants.add(fn)
+
     if len(lastnames) > 1:
         concat = "".join(lastnames)
         variants.add(concat)
-        if firstnames:
-            variants.add(f"{concat}, {fn_str}")
-            variants.add(f"{concat} {fn_str}")
+        if fn:
+            variants.add(f"{concat}, {fn}")
+            variants.add(f"{concat} {fn}")
 
-    # Truncated firstnames (data-entry artifacts: MARVIN BRY, MARVI BRYAN, etc.)
-    for i, fn in enumerate(firstnames):
-        for length in range(2, len(fn)):
-            trunc = fn[:length]
-            partial = " ".join(firstnames[:i] + [trunc] + firstnames[i + 1 :])
-            variants.add(f"{ln_str}, {partial}")
-            variants.add(f"{ln_str} {partial}")
-            if concat:
-                variants.add(f"{concat}, {partial}")
-                variants.add(f"{concat} {partial}")
+    return sorted({v for v in variants if v}, key=len, reverse=True)
 
-    return sorted(variants, key=len, reverse=True)
+
+def _parse_name(last_raw: str, first_raw: str) -> Optional[dict]:
+    last_tokens = [_clean_token(t) for t in last_raw.split() if _is_valid_name_token(t)]
+    first_tokens = [_clean_token(t) for t in first_raw.split() if _is_valid_name_token(t)]
+
+    if not last_tokens and not first_tokens:
+        return None
+
+    return {
+        "lastnames": last_tokens,
+        "firstnames": first_tokens,
+        "all_tokens": last_tokens + first_tokens,
+        "full_variants": _build_variants(last_tokens, first_tokens),
+    }
+
+
+def extract(texts: list[str]) -> Optional[dict]:
+    candidates = []
+
+    for text in texts:
+        # 1) Standard raw OCR / merged final-output label style
+        # Supports:
+        #   Nom: Boongo
+        #   [3] Nom: Boongo
+        #   [1] Prénom: Mereline
+        nom_match = re.search(
+            r"(?mi)^\s*(?:\[\d+\]\s*)?Nom\s*:\s*([^\n]{1,80})\s*$",
+            text,
+        )
+        prenom_match = re.search(
+            r"(?mi)^\s*(?:\[\d+\]\s*)?Pr[ée]nom\s*:\s*([^\n]{1,80})\s*$",
+            text,
+        )
+
+        if nom_match and prenom_match:
+            parsed = _parse_name(nom_match.group(1), prenom_match.group(1))
+            if parsed and parsed["lastnames"] and parsed["firstnames"]:
+                candidates.append(parsed)
+
+        # 2) CRU / urgences style
+        m = re.search(
+            r"(?mi)^\s*([A-ZÀ-Ü]{2,}(?:\s+[A-ZÀ-Ü]{2,})*)\s*\n\s*N[ée]\s*\(?.*?\)?\s*:\s*\n\s*([A-ZÀ-Ü][A-Za-zÀ-ÿ]*(?:\s+[A-ZÀ-Ü][A-Za-zÀ-ÿ]*)*)\s*\n\s*Naiss",
+            text,
+        )
+        if m:
+            parsed = _parse_name(m.group(1), m.group(2))
+            if parsed:
+                candidates.append(parsed)
+
+        # 3) Lab block
+        m = re.search(
+            r"(?mi)Nom\s+patient\s*\n\s*([A-ZÀ-Ü]{2,}(?:\s+[A-ZÀ-Ü]{2,})*)\s*\n\s*([A-ZÀ-Ü][A-Za-zÀ-ÿ]*(?:\s+[A-ZÀ-Ü][A-Za-zÀ-ÿ]*)*)\s*\n\s*Date\s+naissance",
+            text,
+        )
+        if m:
+            parsed = _parse_name(m.group(1), m.group(2))
+            if parsed:
+                candidates.append(parsed)
+
+    candidates = [c for c in candidates if c["lastnames"] and c["firstnames"]]
+    if not candidates:
+        return None
+
+    def score(c):
+        return (
+            len(c["firstnames"]),
+            len(c["lastnames"]),
+            sum(len(x) for x in c["firstnames"]),
+            sum(len(x) for x in c["lastnames"]),
+        )
+
+    best = max(candidates, key=score)
+    best["all_tokens"] = best["lastnames"] + best["firstnames"]
+    best["full_variants"] = _build_variants(best["lastnames"], best["firstnames"])
+
+    logger.info(
+        "Extracted patient: %s %s",
+        " ".join(best["lastnames"]),
+        " ".join(best["firstnames"]),
+    )
+    return best

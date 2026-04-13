@@ -1,3 +1,4 @@
-"""Entry point: python -m anonymisation --input ... --output ..."""
 from .pipeline import main
-main()
+
+if __name__ == "__main__":
+    main()

@@ -1,259 +1,124 @@
-"""
-Main pipeline — orchestrates OCR, name extraction, and anonymization
-across patient subfolders.
-
-Usage:
-    python -m anonymization -i /path/to/root -o /path/to/output
-    python -m anonymization -i /path/to/root -o /path/to/output --gpu
-"""
-
 import csv
 import argparse
 import logging
 from pathlib import Path
 from collections import defaultdict
-from typing import Optional
 
-from . import ocr, name_extraction, pseudonyms, anonymizer
-
-# spaCy model — loaded by run() at startup
-nlp = None
-
-
-def _setup_logging(output_dir: Path):
-    """Configure logging to both console and file."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    log_path = output_dir / "pipeline.log"
-
-    # Root logger
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-
-    # Console handler (already exists by default — clear and re-add)
-    root.handlers.clear()
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
-    console.setFormatter(logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S"
-    ))
-    root.addHandler(console)
-
-    # File handler
-    fh = logging.FileHandler(log_path, mode="w", encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter(
-        "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    ))
-    root.addHandler(fh)
-
-    return log_path
-
+from . import name_extraction, anonymizer
 
 logger = logging.getLogger(__name__)
-
-# spaCy model — loaded lazily by run() at startup
 nlp = None
 
 
-def _save_ocr_texts(doc_texts: dict[str, str], out_dir: Path):
-    """Save raw OCR texts — always, even if anonymization fails."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    parts = []
-    for doc_name, text in doc_texts.items():
-        header = f"\n{'='*60}\n{doc_name}\n{'='*60}\n\n"
-        parts.append(header + text)
-    (out_dir / "ocr_raw.txt").write_text("\n".join(parts), encoding="utf-8")
-
-
-def process_subfolder(
-    subfolder: Path,
-    output_dir: Path,
-    patient_id: str = "001",
-    use_gpu: bool = False,
-    artifacts_path: str = None,
-) -> Optional[dict]:
-    """Process all PDFs in one patient subfolder."""
-    pdf_files = sorted(
-        f for f in subfolder.iterdir()
-        if f.suffix.lower() == ".pdf" and f.is_file()
-    )
-    if not pdf_files:
-        logger.warning(f"No PDFs in {subfolder.name}")
-        return None
-
-    logger.info(f"Processing: {subfolder.name} ({len(pdf_files)} PDFs)")
-
-    # 1. OCR
-    doc_texts = ocr.process_folder(
-        subfolder, use_gpu=use_gpu, artifacts_path=artifacts_path
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
     )
 
-    # Always save raw OCR output (for debugging failed extractions)
-    out_sub = output_dir / subfolder.name
-    _save_ocr_texts(doc_texts, out_sub)
 
-    # 2. Extract patient name
+def load_texts_from_folder(input_dir: Path) -> dict[str, str]:
+    texts = {}
+    for path in sorted(input_dir.glob("*.txt")):
+        texts[path.name] = path.read_text(encoding="utf-8", errors="ignore")
+    return texts
+
+
+def process_folder(input_dir: Path, output_dir: Path, patient_id: str = "001"):
+    doc_texts = load_texts_from_folder(input_dir)
+    if not doc_texts:
+        logger.error("No .txt files found in %s", input_dir)
+        return
+
     patient_info = name_extraction.extract(list(doc_texts.values()))
     if not patient_info:
-        logger.error(
-            f"  Cannot identify patient in {subfolder.name} — "
-            f"OCR saved to {out_sub / 'ocr_raw.txt'}"
-        )
-        return None
-    logger.info(f"  Patient: {patient_info['lastnames']} {patient_info['firstnames']}")
+        logger.error("Could not extract patient name from %s", input_dir)
+        return
 
-    # 3. Generate pseudonyms
-    pseudo_map = pseudonyms.generate(patient_info, patient_id=patient_id)
+    out_dir = output_dir / input_dir.name
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 4. Anonymize and concatenate
+    all_replacements = []
     total_stats = defaultdict(int)
-    all_replacements = []  # (doc_name, original, replacement, category)
-    parts = []
-    for doc_name, text in doc_texts.items():
-        header = f"\n{'='*60}\n{doc_name}\n{'='*60}\n\n"
-        anon_text, stats, replacements = anonymizer.anonymize(text, patient_info, pseudo_map, nlp)
-        parts.append(header + anon_text)
+    merged_parts = []
+
+    for filename, text in doc_texts.items():
+        anon_text, stats, replacements = anonymizer.anonymize(
+            text=text,
+            patient_info=patient_info,
+            patient_id=patient_id,
+            nlp=nlp,
+        )
+
+        merged_parts.append(f"\n{'='*70}\n{filename}\n{'='*70}\n\n{anon_text}")
+
+        out_txt = out_dir / filename
+        out_txt.write_text(anon_text, encoding="utf-8")
+
         for k, v in stats.items():
             total_stats[k] += v
+
         for r in replacements:
             all_replacements.append({
-                "file": doc_name,
+                "file": filename,
+                "category": r["category"],
                 "original": r["original"],
                 "replacement": r["replacement"],
-                "category": r["category"],
+                "start": r["start"],
+                "end": r["end"],
             })
 
-    # 5. Write output
-    out_sub = output_dir / subfolder.name
-    out_sub.mkdir(parents=True, exist_ok=True)
-    (out_sub / "all_documents.txt").write_text("\n".join(parts), encoding="utf-8")
+    (out_dir / "all_documents_anonymized.txt").write_text(
+        "\n".join(merged_parts), encoding="utf-8"
+    )
 
-    # Detailed replacements log
-    repl_path = out_sub / "replacements.csv"
-    with open(repl_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["file", "category", "original", "replacement"])
+    with open(out_dir / "replacements.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["file", "category", "original", "replacement", "start", "end"],
+        )
         writer.writeheader()
         writer.writerows(all_replacements)
 
-    logger.info(f"  Stats: {dict(total_stats)}")
-    logger.info(f"  Replacements log: {repl_path}")
+    with open(out_dir / "summary.txt", "w", encoding="utf-8") as f:
+        f.write(f"Patient ID: PATIENT_{patient_id}\n")
+        f.write(f"Folder: {input_dir.name}\n\n")
+        f.write("Stats:\n")
+        for k, v in sorted(total_stats.items()):
+            f.write(f"  {k}: {v}\n")
 
-    return {
-        "subfolder": subfolder.name,
-        "patient_id": f"PATIENT_{patient_id}",
-        "real_lastnames": " ".join(patient_info["lastnames"]),
-        "real_firstnames": " ".join(patient_info["firstnames"]),
-        "num_docs": len(pdf_files),
-        "stats": dict(total_stats),
-    }
+    logger.info("Done: %s", out_dir)
 
 
-def run(
-    input_dir: Path,
-    output_dir: Path,
-    use_gpu: bool = False,
-    artifacts_path: str = None,
-):
-    """Run full pipeline on all patient subfolders."""
-    log_path = _setup_logging(output_dir)
-    logger.info(f"Log file: {log_path}")
+def run(input_root: Path, output_root: Path):
+    setup_logging()
 
-    # Load spaCy (optional)
     try:
         import spacy
         global nlp
         nlp = spacy.load("fr_core_news_lg")
-        logger.info("spaCy fr_core_news_lg loaded — NER enabled.")
+        logger.info("spaCy loaded.")
     except Exception:
         nlp = None
-        logger.warning(
-            "spaCy not available — regex-only mode. "
-            "Install: pip install spacy && python -m spacy download fr_core_news_lg"
-        )
+        logger.warning("spaCy not available. Running regex-only mode.")
 
-    subfolders = sorted(
-        d for d in input_dir.iterdir()
-        if d.is_dir() and any(f.suffix.lower() == ".pdf" for f in d.iterdir())
-    )
-    if not subfolders:
-        logger.error(f"No subfolders with PDFs in {input_dir}")
+    folders = [d for d in sorted(input_root.iterdir()) if d.is_dir()]
+    if not folders:
+        logger.error("No subfolders found in %s", input_root)
         return
 
-    logger.info(f"Found {len(subfolders)} patient subfolder(s).")
-
-    mappings = []
-    skipped = []  # subfolder names where name extraction failed
-    for idx, sf in enumerate(subfolders, start=1):
-        patient_id = f"{idx:03d}"
-        result = process_subfolder(
-            sf, output_dir, patient_id=patient_id,
-            use_gpu=use_gpu, artifacts_path=artifacts_path
-        )
-        if result:
-            mappings.append(result)
-        else:
-            skipped.append(sf.name)
-
-    # Mapping CSV
-    csv_path = output_dir / "mapping.csv"
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "subfolder", "patient_id", "real_lastnames", "real_firstnames",
-            "num_docs",
-        ])
-        writer.writeheader()
-        for m in mappings:
-            writer.writerow({k: v for k, v in m.items() if k != "stats"})
-
-    # Report
-    report_path = output_dir / "anonymization_report.txt"
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write("ANONYMIZATION REPORT\n" + "=" * 60 + "\n\n")
-        f.write(f"Total subfolders found: {len(subfolders)}\n")
-        f.write(f"Successfully processed: {len(mappings)}\n")
-        f.write(f"Skipped:               {len(skipped)}\n\n")
-
-        if skipped:
-            f.write("SKIPPED SUBFOLDERS (name extraction failed)\n" + "-" * 40 + "\n")
-            for name in skipped:
-                f.write(f"  ✗ {name}  →  see {name}/ocr_raw.txt\n")
-            f.write("  (Check pipeline.log for details)\n\n")
-
-        f.write("PROCESSED SUBFOLDERS\n" + "-" * 40 + "\n")
-        for m in mappings:
-            f.write(f"\nFolder: {m['subfolder']}\n")
-            f.write(f"  Real:      {m['real_lastnames']} {m['real_firstnames']}\n")
-            f.write(f"  Replaced:  [{m['patient_id']}]\n")
-            f.write(f"  Docs: {m['num_docs']}\n")
-            for k, v in m["stats"].items():
-                f.write(f"    {k}: {v}\n")
-
-    logger.info(f"CSV: {csv_path}")
-    logger.info(f"Report: {report_path}")
-    logger.info(f"Log: {log_path}")
-    if skipped:
-        logger.warning(f"SKIPPED {len(skipped)} subfolder(s): {skipped}")
-    logger.info(f"Done. {len(mappings)}/{len(subfolders)} processed.")
+    for idx, folder in enumerate(folders, start=1):
+        process_folder(folder, output_root, patient_id=f"{idx:03d}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Anonymize French medical PDFs.")
-    parser.add_argument("--input", "-i", required=True, help="Root folder with patient subfolders")
-    parser.add_argument("--output", "-o", required=True, help="Output folder")
-    parser.add_argument("--gpu", action="store_true", help="Enable GPU (CUDA)")
-    parser.add_argument(
-        "--artifacts-path",
-        default=None,
-        help="Path to pre-downloaded Docling models (for offline use)",
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input", required=True, help="root folder containing subfolders of OCR txt files")
+    parser.add_argument("-o", "--output", required=True, help="output root")
     args = parser.parse_args()
-    run(
-        Path(args.input),
-        Path(args.output),
-        use_gpu=args.gpu,
-        artifacts_path=args.artifacts_path,
-    )
+
+    run(Path(args.input), Path(args.output))
 
 
 if __name__ == "__main__":
