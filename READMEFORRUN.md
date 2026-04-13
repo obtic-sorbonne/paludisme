@@ -523,3 +523,15 @@ cd ~/digitize_medical_records
 
 ./unified_document_pipeline/run_document_pipeline.sh \
 "/absolute/path/to/file.pdf"
+
+
+#example:
+cd ~/digitize_medical_records
+
+./unified_document_pipeline/run_document_pipeline.sh \
+"/home/lfarooq/digitize_medical_records/data/medrecords/2007_scan_output_fixed/Batch de docs corrigés - Copie/2006 RDB 0186/DOC_00122.pdf"
+
+
+fir whole data folder :
+./unified_document_pipeline/run_document_batch_pipeline.sh \
+"/home/lfarooq/digitize_medical_records/data/medrecords/2007_scan_output_fixed/Batch de docs corrigés - Copie"
