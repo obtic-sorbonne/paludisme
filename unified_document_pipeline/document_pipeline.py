@@ -30,42 +30,38 @@ def save_json(path: Path, data):
 
 
 def run_cmd(cmd: list[str], log_lines: list[str], cwd: Path | None = None):
-    log_lines.append(f"$ {' '.join(cmd)}")
+    cmd_str = " ".join(cmd)
+    print(f"\n[RUN] {cmd_str}", flush=True)
+    log_lines.append(f"$ {cmd_str}")
+
     result = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
         text=True,
-        capture_output=True,
     )
-    if result.stdout:
-        log_lines.append(result.stdout.rstrip())
-    if result.stderr:
-        log_lines.append(result.stderr.rstrip())
 
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Command failed ({result.returncode}): {' '.join(cmd)}"
-        )
+        log_lines.append(f"[ERROR] Command failed ({result.returncode}): {cmd_str}")
+        raise RuntimeError(f"Command failed ({result.returncode}): {cmd_str}")
 
 
 def run_cmd_soft(cmd: list[str], log_lines: list[str], cwd: Path | None = None):
-    log_lines.append(f"$ {' '.join(cmd)}")
+    cmd_str = " ".join(cmd)
+    print(f"\n[RUN-SOFT] {cmd_str}", flush=True)
+    log_lines.append(f"$ {cmd_str}")
+
     result = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
         text=True,
-        capture_output=True,
     )
-    if result.stdout:
-        log_lines.append(result.stdout.rstrip())
-    if result.stderr:
-        log_lines.append(result.stderr.rstrip())
 
     ok = result.returncode == 0
     if not ok:
-        log_lines.append(
-            f"[WARNING] Soft-fail command ({result.returncode}): {' '.join(cmd)}"
-        )
+        warning = f"[WARNING] Soft-fail command ({result.returncode}): {cmd_str}"
+        print(warning, flush=True)
+        log_lines.append(warning)
+
     return ok, result.returncode
 
 
@@ -127,21 +123,63 @@ def parse_pages_from_txt(txt_path: Path) -> dict[int, list[str]]:
     return pages
 
 
-def extract_lab_output_for_page(doc_stem: str, page_num: int, branch_failures: dict[int, str]) -> str:
-    if page_num in branch_failures:
-        return f"LAB PIPELINE FAILED FOR PAGE {page_num}: {branch_failures[page_num]}"
-
+def cleanup_old_lab_outputs(doc_stem: str, page_num: int):
     page_index = page_num - 1
+
     candidates = [
         BENCHMARK_DIR / "hybrid_tables_final" / f"{doc_stem}_{page_index}_res_hybrid_final.txt",
         BENCHMARK_DIR / "hybrid_tables" / f"{doc_stem}_{page_index}_res_hybrid.txt",
+        BENCHMARK_DIR / "lab_fallback_text" / f"{doc_stem}_{page_index}_{page_index}_ocr_fallback.txt",
+        BENCHMARK_DIR / "lab_fallback_meta" / f"{doc_stem}_{page_index}_{page_index}_fallback.json",
     ]
 
     for p in candidates:
         if p.exists():
-            return p.read_text(encoding="utf-8").strip()
+            p.unlink()
+
+
+def get_lab_output_paths(doc_stem: str, page_num: int):
+    page_index = page_num - 1
+
+    final_hybrid = BENCHMARK_DIR / "hybrid_tables_final" / f"{doc_stem}_{page_index}_res_hybrid_final.txt"
+    hybrid = BENCHMARK_DIR / "hybrid_tables" / f"{doc_stem}_{page_index}_res_hybrid.txt"
+    fallback_txt = BENCHMARK_DIR / "lab_fallback_text" / f"{doc_stem}_{page_index}_{page_index}_ocr_fallback.txt"
+
+    return final_hybrid, hybrid, fallback_txt
+
+
+def extract_lab_output_for_page(doc_stem: str, page_num: int, branch_failures: dict[int, str]) -> str:
+    final_hybrid, hybrid, fallback_txt = get_lab_output_paths(doc_stem, page_num)
+
+    if final_hybrid.exists():
+        return final_hybrid.read_text(encoding="utf-8").strip()
+
+    if hybrid.exists():
+        return hybrid.read_text(encoding="utf-8").strip()
+
+    if fallback_txt.exists():
+        return fallback_txt.read_text(encoding="utf-8").strip()
+
+    if page_num in branch_failures:
+        return f"LAB PIPELINE FAILED FOR PAGE {page_num}: {branch_failures[page_num]}"
 
     return f"LAB OUTPUT NOT FOUND FOR PAGE {page_num}"
+
+
+def load_form_outputs(doc_stem: str) -> tuple[str | None, dict | None]:
+    txt_path = BENCHMARK_DIR / "full_document_all_pages_parser" / f"{doc_stem}_full_final_output.txt"
+    json_path = BENCHMARK_DIR / "full_document_all_pages_parser" / f"{doc_stem}_all_pages_all_specs.json"
+
+    txt_content = None
+    json_content = None
+
+    if txt_path.exists():
+        txt_content = txt_path.read_text(encoding="utf-8").strip()
+
+    if json_path.exists():
+        json_content = load_json(json_path)
+
+    return txt_content, json_content
 
 
 def build_merged_output(
@@ -150,6 +188,8 @@ def build_merged_output(
     narrative_pages: dict[int, list[str]],
     doc_stem: str,
     branch_failures: dict[int, str],
+    form_output_txt: str | None,
+    form_output_json: dict | None,
 ):
     merged_txt_lines = []
     merged_json = {
@@ -162,6 +202,8 @@ def build_merged_output(
     merged_txt_lines.append(f"PDF: {pdf_path}")
     merged_txt_lines.append(f"DOC_STEM: {doc_stem}")
     merged_txt_lines.append("")
+
+    form_block_written = False
 
     for item in routes:
         page_num = item["page_num"]
@@ -184,9 +226,19 @@ def build_merged_output(
         merged_txt_lines.append("-" * 80)
 
         if next_step == "lab_table_extraction":
+            final_hybrid, hybrid, fallback_txt = get_lab_output_paths(doc_stem, page_num)
             content = extract_lab_output_for_page(doc_stem, page_num, branch_failures)
             merged_txt_lines.append(content)
-            page_entry["content_source"] = "lab_tables_pipeline"
+
+            if final_hybrid.exists():
+                page_entry["content_source"] = "lab_tables_pipeline_final"
+            elif hybrid.exists():
+                page_entry["content_source"] = "lab_tables_pipeline_hybrid"
+            elif fallback_txt.exists():
+                page_entry["content_source"] = "lab_tables_pipeline_fallback_ocr"
+            else:
+                page_entry["content_source"] = "lab_tables_pipeline_missing"
+
             page_entry["content"] = content
 
         elif next_step == "report_text_extraction":
@@ -197,11 +249,25 @@ def build_merged_output(
             page_entry["content"] = content
 
         elif next_step == "form_field_extraction":
-            lines = narrative_pages.get(page_num, [])
-            content = "\n".join(lines).strip() if lines else f"FORM PAGE OCR TEXT NOT FOUND FOR PAGE {page_num}"
-            merged_txt_lines.append(content)
-            page_entry["content_source"] = "temporary_form_fallback_from_narrative_ocr"
-            page_entry["content"] = content
+            if not form_block_written:
+                if form_output_txt:
+                    content = form_output_txt
+                    merged_txt_lines.append(content)
+                    page_entry["content_source"] = "checkbox_full_doc_pipeline"
+                    page_entry["content"] = content
+                    if form_output_json is not None:
+                        page_entry["structured_json"] = form_output_json
+                else:
+                    content = f"FORM STRUCTURED OUTPUT NOT FOUND FOR DOC {doc_stem}"
+                    merged_txt_lines.append(content)
+                    page_entry["content_source"] = "checkbox_full_doc_pipeline_missing_output"
+                    page_entry["content"] = content
+                form_block_written = True
+            else:
+                content = "[FORM CONTENT ALREADY INCLUDED ABOVE FROM CHECKBOX FULL-DOCUMENT PIPELINE]"
+                merged_txt_lines.append(content)
+                page_entry["content_source"] = "checkbox_full_doc_pipeline_reference"
+                page_entry["content"] = content
 
         else:
             lines = narrative_pages.get(page_num, [])
@@ -269,7 +335,6 @@ def main():
     need_narrative = (
         grouped_pages.get("report_text_extraction")
         or grouped_pages.get("keep_text_only")
-        or grouped_pages.get("form_field_extraction")
     )
 
     if need_narrative:
@@ -285,7 +350,23 @@ def main():
         narrative_txt = BENCHMARK_DIR / "paddle" / f"{doc_stem}.txt"
         narrative_pages = parse_pages_from_txt(narrative_txt)
 
+    form_output_txt = None
+    form_output_json = None
+
+    if grouped_pages.get("form_field_extraction"):
+        run_cmd(
+            [
+                str(ROOT_DIR / "checkbox_full_doc_pipeline" / "run_checkbox_form_pipeline.sh"),
+                str(pdf_path),
+            ],
+            log_lines,
+            cwd=ROOT_DIR,
+        )
+        form_output_txt, form_output_json = load_form_outputs(doc_stem)
+
     for page_num in grouped_pages.get("lab_table_extraction", []):
+        cleanup_old_lab_outputs(doc_stem, page_num)
+
         page_index = page_num - 1
         ok, code = run_cmd_soft(
             [
@@ -305,6 +386,8 @@ def main():
         narrative_pages=narrative_pages,
         doc_stem=doc_stem,
         branch_failures=branch_failures,
+        form_output_txt=form_output_txt,
+        form_output_json=form_output_json,
     )
 
     merged_txt_path = doc_out_dir / "merged_final_output.txt"

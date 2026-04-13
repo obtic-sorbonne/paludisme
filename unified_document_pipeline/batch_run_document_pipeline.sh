@@ -8,20 +8,25 @@ fi
 
 PDF_DIR="$1"
 
+if [ ! -d "$PDF_DIR" ]; then
+  echo "ERROR: Folder not found: $PDF_DIR"
+  exit 1
+fi
+
 cd ~/digitize_medical_records
 source env_paddle/bin/activate
 export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 
-for pdf in "$PDF_DIR"/*.pdf; do
-  [ -e "$pdf" ] || continue
-
+find "$PDF_DIR" -type f -iname "*.pdf" | sort | while IFS= read -r pdf; do
   echo "=============================="
   echo "Unified document pipeline"
   echo "Processing PDF: $pdf"
   echo "DOC_STEM: $(basename "$pdf" .pdf)"
   echo "=============================="
 
-  python unified_document_pipeline/document_pipeline.py "$pdf"
+  if ! python unified_document_pipeline/document_pipeline.py "$pdf"; then
+    echo "FAILED: $pdf"
+  fi
 
   echo ""
 done
