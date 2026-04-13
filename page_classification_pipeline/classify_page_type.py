@@ -125,7 +125,14 @@ def count_word_matches(joined_norm: str, keywords):
     return total
 
 
+
 def classify_page(texts, layout_flags):
+    scores = {
+        "lab_table_page": 0,
+        "form_page": 0,
+        "clinical_report_page": 0,
+    }
+
     joined = "\n".join(texts)
     joined_norm = norm(joined)
     joined_compact = compact(joined)
@@ -173,6 +180,23 @@ def classify_page(texts, layout_flags):
         "bilirubine conjuguee",
         "pre albumine",
     ]
+
+    
+    short_biochem_hits = count_matches(joined_norm, [
+    "biochimie generale",
+    "examens de sang",
+    "hemolyse",
+    "ictere",
+    "lipemie",
+    "glycemie",
+    "crp",
+    "procalcitonine",
+    ])
+
+    if short_biochem_hits >= 4:
+        scores["lab_table_page"] += 8
+
+
 
     form_keywords = [
         "xoui",
@@ -442,24 +466,29 @@ def classify_page(texts, layout_flags):
 
     strong_table_headers = all(k in joined_norm for k in ["description", "resultat", "unite"])
     strong_lab_analytes = count_matches(joined_norm, [
-        "hemoglobine",
-        "hematocrite",
-        "leucocytes",
-        "plaquettes",
-        "sodium",
-        "potassium",
-        "chlore",
-        "bicarbonates",
-        "uree",
-        "creatinine",
-        "bilirubine",
-        "asat",
-        "alat",
-        "gamma gt",
-        "phosphatases alcalines",
-        "reticulocytes",
+    "hemoglobine",
+    "hematocrite",
+    "leucocytes",
+    "plaquettes",
+    "reticulocytes",
+    "sodium",
+    "potassium",
+    "chlore",
+    "bicarbonates",
+    "uree",
+    "creatinine",
+    "bilirubine",
+    "asat",
+    "alat",
+    "gamma gt",
+    "phosphatases alcalines",
+    "hemolyse",
+    "ictere",
+    "lipemie",
+    "glycemie",
+    "crp",
+    "procalcitonine",   
     ]) >= 3
-
     scores["lab_table_page"] += lab_hits
     scores["form_page"] += form_hits + short_form_hits
     scores["clinical_report_page"] += report_hits
