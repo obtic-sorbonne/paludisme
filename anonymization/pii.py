@@ -30,11 +30,15 @@ STRUCTURED_PII = {
         r"\b([a-zA-Z0-9_.+\-]+@[a-zA-Z0-9\-]+\.[a-zA-Z0-9.\-]+)\b",
     ],
     "ADRESSE": [
-    r"(\d{1,4}\s*(?:bis|ter|BIS|TER)?\s*(?:rue|avenue|av\.?|boulevard|bd|Bd|BD|impasse|passage|place|route|chemin|all[ée]e|cours|square)\s+[^\n]{3,80})",
-    r"(\b\d{5}\s+[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]{2,}\b)",
-    r"(\b\d{5}\s*\n\s*[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ \-]{2,}\b)",
-    r"(?mi)^\s*Patient\s+adresse\s*\n\s*([^\n]{3,80}(?:\n[^\n]{3,80})?)",
-    ]
+        r"(\d{1,4}\s*(?:bis|ter|BIS|TER)?\s*(?:rue|avenue|av\.?|boulevard|bd|impasse|passage|place|route|chemin|all[ée]e|cours|square)\s+[^\n]{3,120})",
+        r"(\b\d{5}\s+[A-ZÀ-Ü][A-ZÀ-Üa-zà-ÿ0-9 \-]{2,}\b)",
+        r"(?mis)(?:Adresse\s+des\s+parents|Patient\s+adresse)\s*:\s*\n\s*([^\n]{3,120}\n\s*\d{5}\s+[A-ZÀ-ÜA-Za-zÀ-ÿ0-9 \-]{2,80})",
+        r"(?mis)(\d{1,4}\s*(?:bis|ter|BIS|TER)?\s*(?:rue|avenue|av\.?|boulevard|bd|impasse|passage|place|route|chemin|all[ée]e|cours|square)\s+[^\n]{3,120}\n\s*\d{5}\s+[A-ZÀ-ÜA-Za-zÀ-ÿ0-9 \-]{2,80})",
+        r"(\b\d{1,4}(?:bis|ter)?(?:RUE|AVENUE|AV\.?|BOULEVARD|BD|IMPASSE|PASSAGE|PLACE|ROUTE|CHEMIN|ALLEE|COURS|SQUARE)[A-ZÀ-Üa-zà-ÿ0-9\- ]{2,80}\d{5}[A-ZÀ-Üa-zà-ÿ0-9\- ]{2,40}\b)",
+        r"(\(\s*\d{5}\s*\)\s*[A-ZÀ-ÜA-Za-zÀ-ÿ0-9 \-]{2,40})",
+        r"(\b\d{5}\s*[)\]）]?\s*[A-ZÀ-ÜA-Za-zÀ-ÿ0-9 \-]{2,40}\b)",
+        r"(\b\d{5}[A-ZÀ-ÜA-Za-zÀ-ÿ0-9\-]{2,40}\b)",
+    ],
 }
 
 HOSPITAL_PATTERNS = [
@@ -43,10 +47,15 @@ HOSPITAL_PATTERNS = [
 ]
 
 PERSON_PATTERNS = [
-    r"(?:Dr|Docteur|Pr|Professeur)\.?\s+([A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+(?:\s+[A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+)+)",
-    r"(?:Valid[ée]\s+par|Relecture\s+par|Copie\s+[àa]|M[ée]decin(?:\s+traitant)?|M[ée]decin\(s\)\s+senior\(s\)|Interne\(s\)|Etudiant\s+hospitalier)\s*[: ]+\s*(?:M\.?\s+)?([A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+(?:,\s*[A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+)?(?:\s+[A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+)*)",
+    r"(?:Dr|Docteur|Pr|Professeur)\.?\s+([A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+(?:\s+[A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+){1,3})",
+
+    r"(?:Valid[ée]\s+par|Relecture\s+par|Copie\s+[àa]|M[ée]decin(?:\s+traitant)?|M[ée]decin\(s\)\s+senior\(s\)|Interne\(s\)|Etudiant\s+hospitalier)\s*[: ]+\s*(?:M\.?\s+)?([A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+(?:,\s*[A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+)?(?:\s+[A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+){0,3})",
+
     r"\b([A-ZÀ-Ü]{3,},\s*[A-ZÀ-Ü][a-zà-ÿ'\-]{2,})\b",
+
     r"\b(Monsieur\s+[A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+(?:,\s*[A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+)?)\b",
+
+    r"(?:M[ée]decin\(s\)\s+senior\(s\)|Interne\(s\)|Relecture\s+par)\s*[: ]+\s*([A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+(?:\s+[A-ZÀ-Ü][A-Za-zÀ-ÿ'\-]+){1,4})",
 ]
 
 FAMILY_CONTEXT_PATTERNS = [
@@ -104,7 +113,7 @@ def find_structured_pii(text: str) -> list[tuple[str, str, int, int]]:
 
     for pii_type in ["NIR", "DOB", "TELEPHONE", "IDENTIFIANT", "EMAIL", "ADRESSE"]:
         for pattern in STRUCTURED_PII.get(pii_type, []):
-            for match in re.finditer(pattern, text, re.MULTILINE):
+            for match in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
                 start = match.start(1) if match.lastindex else match.start(0)
                 end = match.end(1) if match.lastindex else match.end(0)
                 captured = match.group(1) if match.lastindex else match.group(0)
@@ -116,34 +125,22 @@ def find_structured_pii(text: str) -> list[tuple[str, str, int, int]]:
 
 
 def _split_family_contact_block(raw: str) -> list[str]:
-    """
-    Split a contact field like:
-      'Père - Mère DOUAULT FRANCOIS,NGUELEU JEANINE'
-    into:
-      ['DOUAULT FRANCOIS', 'NGUELEU JEANINE']
-    """
     text = _normalize(raw)
 
-    # Remove obvious role labels at the start or inside the block
     text = re.sub(r"(?i)\bP[èe]re\b", " ", text)
     text = re.sub(r"(?i)\bM[èe]re\b", " ", text)
     text = re.sub(r"(?i)\bParent\b", " ", text)
     text = re.sub(r"(?i)\bParents\b", " ", text)
     text = re.sub(r"(?i)\bP[èe]re\s*-\s*M[èe]re\b", " ", text)
 
-    # Normalize separators
     text = text.replace(";", ",")
     text = _normalize(text)
 
-    # Split on comma first
     parts = [p.strip(" ,") for p in text.split(",") if p.strip(" ,")]
 
     names = []
     for part in parts:
         part = _normalize(part)
-
-        # Sometimes OCR leaves leading words before actual name
-        # Keep the final name-like chunk if present
         part = re.sub(r"^(?:-|:|\s)+", "", part).strip()
 
         if _is_plausible_person(part):
@@ -165,10 +162,15 @@ def find_family_contacts(text: str, patient_tokens: set[str]) -> list[str]:
     return sorted(set(found), key=len, reverse=True)
 
 
-def find_other_people(text: str, patient_tokens: set[str], use_spacy: bool = False, nlp: Optional[object] = None) -> list[str]:
+def find_other_people(
+    text: str,
+    patient_tokens: set[str],
+    use_spacy: bool = False,
+    nlp: Optional[object] = None,
+) -> list[str]:
     found = []
     for pattern in PERSON_PATTERNS:
-        for match in re.finditer(pattern, text, re.MULTILINE):
+        for match in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
             name = _normalize(match.group(1))
             toks = {t.upper() for t in name.replace(",", " ").split()}
             if toks and toks.issubset(patient_tokens):
@@ -190,10 +192,11 @@ def find_other_people(text: str, patient_tokens: set[str], use_spacy: bool = Fal
 
     return sorted(set(found), key=len, reverse=True)
 
+
 def find_hospitals_and_services(text: str) -> list[tuple[str, str]]:
     found = []
     for pattern in HOSPITAL_PATTERNS:
-        for match in re.finditer(pattern, text, re.MULTILINE):
+        for match in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
             entity = _normalize(match.group(1))
             if not entity:
                 continue
