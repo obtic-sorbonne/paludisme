@@ -65,46 +65,84 @@ def run_cmd_soft(cmd: list[str], log_lines: list[str], cwd: Path | None = None):
     return ok, result.returncode
 
 
-def run_anonymization_on_merged_output(
-    merged_txt_path: Path,
-    doc_out_dir: Path,
-    log_lines: list[str],
-):
-    anonymized_txt_path = doc_out_dir / "merged_final_output_anonymized.txt"
-
-    cmd = [
-        "python",
-        "-m",
-        "anonymization.test_single_file",
-        str(merged_txt_path),
-        "-o",
-        str(anonymized_txt_path),
-    ]
-
-    cmd_str = " ".join(cmd)
-    print(f"\n[RUN] {cmd_str}", flush=True)
-    log_lines.append(f"$ {cmd_str}")
-
-    result = subprocess.run(
-        cmd,
-        cwd=str(ROOT_DIR),
-        text=True,
-    )
-
-    if result.returncode != 0:
-        warning = f"[WARNING] Anonymization failed ({result.returncode}) for {merged_txt_path.name}"
-        print(warning, flush=True)
-        log_lines.append(warning)
-        return None, None
-
-    repl_path = anonymized_txt_path.with_suffix(".replacements.txt")
-    return anonymized_txt_path, repl_path
-
 def extract_page_num_from_route_name(path: Path) -> int | None:
     m = re.search(r"_(\d+)_(\d+)_res_route\.json$", path.name)
     if not m:
         return None
     return int(m.group(1)) + 1
+
+
+def purge_doc_outputs(doc_stem: str, log_lines: list[str]) -> None:
+    """
+    Remove all cached artifacts for this DOC stem before rerunning.
+    This prevents collisions with another PDF that has the same DOC_xxxxx stem
+    in a different source folder/year.
+    """
+    log_lines.append("")
+    log_lines.append(f"PURGING OLD CACHED OUTPUTS FOR {doc_stem}")
+
+    patterns = [
+        BENCHMARK_DIR / "paddle" / f"{doc_stem}.txt",
+        BENCHMARK_DIR / "paddle_table" / f"{doc_stem}_*_res.json",
+        BENCHMARK_DIR / "page_classification" / f"{doc_stem}_*_page_type.json",
+        BENCHMARK_DIR / "page_routing" / f"{doc_stem}_*_route.json",
+        BENCHMARK_DIR / "hybrid_tables_final" / f"{doc_stem}_*",
+        BENCHMARK_DIR / "hybrid_tables" / f"{doc_stem}_*",
+        BENCHMARK_DIR / "lab_fallback_text" / f"{doc_stem}_*",
+        BENCHMARK_DIR / "lab_fallback_meta" / f"{doc_stem}_*",
+        BENCHMARK_DIR / "full_document_all_pages_parser" / f"{doc_stem}_*",
+    ]
+
+    for pattern in patterns:
+        parent = pattern.parent
+        name = pattern.name
+
+        if "*" in name:
+            for p in parent.glob(name):
+                try:
+                    if p.is_file():
+                        p.unlink()
+                        log_lines.append(f"deleted file: {p}")
+                    elif p.is_dir():
+                        for child in p.rglob("*"):
+                            if child.is_file():
+                                child.unlink()
+                        p.rmdir()
+                        log_lines.append(f"deleted dir: {p}")
+                except Exception as e:
+                    log_lines.append(f"[WARNING] Could not delete {p}: {e}")
+        else:
+            p = pattern
+            if p.exists():
+                try:
+                    if p.is_file():
+                        p.unlink()
+                        log_lines.append(f"deleted file: {p}")
+                    elif p.is_dir():
+                        for child in p.rglob("*"):
+                            if child.is_file():
+                                child.unlink()
+                        p.rmdir()
+                        log_lines.append(f"deleted dir: {p}")
+                except Exception as e:
+                    log_lines.append(f"[WARNING] Could not delete {p}: {e}")
+
+    final_doc_dir = BENCHMARK_DIR / "final_document_pipeline" / doc_stem
+    if final_doc_dir.exists():
+        for child in final_doc_dir.rglob("*"):
+            if child.is_file():
+                try:
+                    child.unlink()
+                except Exception as e:
+                    log_lines.append(f"[WARNING] Could not delete {child}: {e}")
+        try:
+            for sub in sorted(final_doc_dir.rglob("*"), reverse=True):
+                if sub.is_dir():
+                    sub.rmdir()
+            final_doc_dir.rmdir()
+            log_lines.append(f"deleted dir: {final_doc_dir}")
+        except Exception as e:
+            log_lines.append(f"[WARNING] Could not fully delete {final_doc_dir}: {e}")
 
 
 def load_route_files_for_doc(doc_stem: str):
@@ -202,19 +240,64 @@ def extract_lab_output_for_page(doc_stem: str, page_num: int, branch_failures: d
 
 
 def load_form_outputs(doc_stem: str) -> tuple[str | None, dict | None]:
-    txt_path = BENCHMARK_DIR / "full_document_all_pages_parser" / f"{doc_stem}_full_final_output.txt"
-    json_path = BENCHMARK_DIR / "full_document_all_pages_parser" / f"{doc_stem}_all_pages_all_specs.json"
+    txt_candidates = [
+        BENCHMARK_DIR / "full_document_all_pages_parser" / f"{doc_stem}_full_final_output.txt",
+        BENCHMARK_DIR / "full_document_all_pages_parser" / f"{doc_stem}_all_pages_all_specs_summary.txt",
+    ]
+    json_candidates = [
+        BENCHMARK_DIR / "full_document_all_pages_parser" / f"{doc_stem}_all_pages_all_specs.json",
+    ]
 
     txt_content = None
     json_content = None
 
-    if txt_path.exists():
-        txt_content = txt_path.read_text(encoding="utf-8").strip()
+    for txt_path in txt_candidates:
+        if txt_path.exists():
+            txt_content = txt_path.read_text(encoding="utf-8").strip()
+            break
 
-    if json_path.exists():
-        json_content = load_json(json_path)
+    for json_path in json_candidates:
+        if json_path.exists():
+            json_content = load_json(json_path)
+            break
 
     return txt_content, json_content
+
+
+def looks_like_cnr_checkbox_form(doc_stem: str) -> bool:
+    """
+    Document-level guard:
+    only run the checkbox full-document pipeline for real CNR Paludisme forms.
+    This avoids injecting fake form output into hospital reports and lab sheets.
+    """
+    paddle_txt = BENCHMARK_DIR / "paddle" / f"{doc_stem}.txt"
+    if not paddle_txt.exists():
+        return False
+
+    text = paddle_txt.read_text(encoding="utf-8", errors="ignore")
+    text_norm = clean_text(text).lower()
+
+    required_main = [
+        "cnr paludisme",
+    ]
+
+    required_any = [
+        "id correspondant",
+        "date de la consultation actuelle",
+        "date du diagnostic biologique",
+        "protection personnelle anti-moustiques",
+        "chimioprophylaxie utilisée",
+        "chimioprophylaxie utilisee",
+        "fiche n",
+    ]
+
+    if not all(term in text_norm for term in required_main):
+        return False
+
+    if not any(term in text_norm for term in required_any):
+        return False
+
+    return True
 
 
 def build_merged_output(
@@ -225,6 +308,7 @@ def build_merged_output(
     branch_failures: dict[int, str],
     form_output_txt: str | None,
     form_output_json: dict | None,
+    checkbox_pipeline_ran: bool,
 ):
     merged_txt_lines = []
     merged_json = {
@@ -232,6 +316,7 @@ def build_merged_output(
         "doc_stem": doc_stem,
         "pages": [],
         "branch_failures": branch_failures,
+        "checkbox_pipeline_ran": checkbox_pipeline_ran,
     }
 
     merged_txt_lines.append(f"PDF: {pdf_path}")
@@ -284,24 +369,35 @@ def build_merged_output(
             page_entry["content"] = content
 
         elif next_step == "form_field_extraction":
-            if not form_block_written:
-                if form_output_txt:
-                    content = form_output_txt
-                    merged_txt_lines.append(content)
-                    page_entry["content_source"] = "checkbox_full_doc_pipeline"
-                    page_entry["content"] = content
-                    if form_output_json is not None:
-                        page_entry["structured_json"] = form_output_json
+            if checkbox_pipeline_ran:
+                if not form_block_written:
+                    if form_output_txt:
+                        content = form_output_txt
+                        merged_txt_lines.append(content)
+                        page_entry["content_source"] = "checkbox_full_doc_pipeline"
+                        page_entry["content"] = content
+                        if form_output_json is not None:
+                            page_entry["structured_json"] = form_output_json
+                    else:
+                        content = f"FORM STRUCTURED OUTPUT NOT FOUND FOR DOC {doc_stem}"
+                        merged_txt_lines.append(content)
+                        page_entry["content_source"] = "checkbox_full_doc_pipeline_missing_output"
+                        page_entry["content"] = content
+                    form_block_written = True
                 else:
-                    content = f"FORM STRUCTURED OUTPUT NOT FOUND FOR DOC {doc_stem}"
+                    content = "[FORM CONTENT ALREADY INCLUDED ABOVE FROM CHECKBOX FULL-DOCUMENT PIPELINE]"
                     merged_txt_lines.append(content)
-                    page_entry["content_source"] = "checkbox_full_doc_pipeline_missing_output"
+                    page_entry["content_source"] = "checkbox_full_doc_pipeline_reference"
                     page_entry["content"] = content
-                form_block_written = True
             else:
-                content = "[FORM CONTENT ALREADY INCLUDED ABOVE FROM CHECKBOX FULL-DOCUMENT PIPELINE]"
+                lines = narrative_pages.get(page_num, [])
+                if lines:
+                    content = "\n".join(lines).strip()
+                    page_entry["content_source"] = "form_routed_but_checkbox_skipped_narrative_fallback"
+                else:
+                    content = "[FORM ROUTING DETECTED, BUT DOCUMENT-LEVEL CNR FORM SIGNATURE NOT FOUND — CHECKBOX PIPELINE SKIPPED]"
+                    page_entry["content_source"] = "checkbox_pipeline_skipped"
                 merged_txt_lines.append(content)
-                page_entry["content_source"] = "checkbox_full_doc_pipeline_reference"
                 page_entry["content"] = content
 
         else:
@@ -329,7 +425,10 @@ def main():
     )
     args = parser.parse_args()
 
-    pdf_path = Path(args.pdf_path)
+    pdf_path = Path(args.pdf_path).expanduser().resolve()
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
     doc_stem = pdf_path.stem
     base_out_dir = Path(args.output_dir)
     doc_out_dir = base_out_dir / doc_stem
@@ -344,6 +443,13 @@ def main():
 
     branch_failures: dict[int, str] = {}
 
+    # 0) Purge old cached outputs for this DOC stem
+    purge_doc_outputs(doc_stem, log_lines)
+
+    # Recreate final output dir after purge
+    doc_out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1) Page classification / routing
     run_cmd(
         [
             str(ROOT_DIR / "page_classification_pipeline" / "run_page_classification_pipeline.sh"),
@@ -366,10 +472,12 @@ def main():
     for step, pages in grouped_pages.items():
         log_lines.append(f"{step}: {pages}")
 
+    # 2) Narrative pipeline only if needed
     narrative_pages = {}
     need_narrative = (
         grouped_pages.get("report_text_extraction")
         or grouped_pages.get("keep_text_only")
+        or grouped_pages.get("form_field_extraction")
     )
 
     if need_narrative:
@@ -385,10 +493,19 @@ def main():
         narrative_txt = BENCHMARK_DIR / "paddle" / f"{doc_stem}.txt"
         narrative_pages = parse_pages_from_txt(narrative_txt)
 
+    # 3) Checkbox/form pipeline only for true CNR forms
     form_output_txt = None
     form_output_json = None
+    checkbox_pipeline_ran = False
 
-    if grouped_pages.get("form_field_extraction"):
+    has_form_routed_pages = bool(grouped_pages.get("form_field_extraction"))
+    doc_is_real_cnr_form = looks_like_cnr_checkbox_form(doc_stem) if has_form_routed_pages else False
+
+    log_lines.append("")
+    log_lines.append(f"HAS_FORM_ROUTED_PAGES: {has_form_routed_pages}")
+    log_lines.append(f"LOOKS_LIKE_REAL_CNR_FORM: {doc_is_real_cnr_form}")
+
+    if has_form_routed_pages and doc_is_real_cnr_form:
         run_cmd(
             [
                 str(ROOT_DIR / "checkbox_full_doc_pipeline" / "run_checkbox_form_pipeline.sh"),
@@ -398,7 +515,16 @@ def main():
             cwd=ROOT_DIR,
         )
         form_output_txt, form_output_json = load_form_outputs(doc_stem)
+        checkbox_pipeline_ran = True
+    elif has_form_routed_pages:
+        msg = (
+            f"[INFO] Skipped checkbox pipeline for {doc_stem}: routed form page(s) found, "
+            "but document does not match CNR checkbox-form signature."
+        )
+        print(msg, flush=True)
+        log_lines.append(msg)
 
+    # 4) Lab table pipeline only for routed lab pages
     for page_num in grouped_pages.get("lab_table_extraction", []):
         cleanup_old_lab_outputs(doc_stem, page_num)
 
@@ -415,6 +541,7 @@ def main():
         if not ok:
             branch_failures[page_num] = f"run_lab_table_pipeline.sh failed with code {code}"
 
+    # 5) Merge all final branch outputs into one final document output
     merged_txt, merged_json = build_merged_output(
         pdf_path=pdf_path,
         routes=routes,
@@ -423,6 +550,7 @@ def main():
         branch_failures=branch_failures,
         form_output_txt=form_output_txt,
         form_output_json=form_output_json,
+        checkbox_pipeline_ran=checkbox_pipeline_ran,
     )
 
     merged_txt_path = doc_out_dir / "merged_final_output.txt"
@@ -435,19 +563,14 @@ def main():
     print(f"Saved merged TXT:  {merged_txt_path}")
     print(f"Saved merged JSON: {merged_json_path}")
 
-    anonymized_txt_path, repl_path = run_anonymization_on_merged_output(
-        merged_txt_path=merged_txt_path,
-        doc_out_dir=doc_out_dir,
-        log_lines=log_lines,
-    )
-
-    if anonymized_txt_path:
-        print(f"Saved anonymized TXT: {anonymized_txt_path}")
-    if repl_path and repl_path.exists():
-        print(f"Saved replacements:   {repl_path}")
+    log_lines.append("")
+    log_lines.append("OUTPUT FILES")
+    log_lines.append(f"merged_txt: {merged_txt_path}")
+    log_lines.append(f"merged_json: {merged_json_path}")
 
     log_path.write_text("\n".join(log_lines), encoding="utf-8")
-    print(f"Saved log:            {log_path}")
+    print(f"Saved log:         {log_path}")
+
 
 if __name__ == "__main__":
     main()

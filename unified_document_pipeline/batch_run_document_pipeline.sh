@@ -18,13 +18,20 @@ source env_paddle/bin/activate
 export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 
 find "$PDF_DIR" -type f -iname "*.pdf" | sort | while IFS= read -r pdf; do
+  doc_stem="$(basename "$pdf" .pdf)"
+
   echo "=============================="
-  echo "Unified document + anonymization pipeline"
+  echo "Unified document pipeline"
   echo "Processing PDF: $pdf"
-  echo "DOC_STEM: $(basename "$pdf" .pdf)"
+  echo "DOC_STEM: $doc_stem"
   echo "=============================="
 
-  if ! python unified_document_pipeline/document_pipeline.py "$pdf"; then
+  # Optional but recommended: remove old outputs for this doc
+  rm -rf "benchmark_outputs/final_document_pipeline/$doc_stem"
+  rm -f benchmark_outputs/page_routing/${doc_stem}_*_res_route.json
+  rm -f benchmark_outputs/page_classification/${doc_stem}_*_page_type.json
+
+  if ! python3 unified_document_pipeline/document_pipeline.py "$pdf"; then
     echo "FAILED: $pdf"
   fi
 
