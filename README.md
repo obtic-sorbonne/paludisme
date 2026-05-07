@@ -9,8 +9,6 @@ Automated pipeline for digitizing CNR Paludisme malaria survey records.
 
 ## Getting Started
 
-See [SystemB/README.md](SystemB/README.md) for the full installation guide and usage instructions.
-
 Developed at **ObTIC, Sorbonne Université** by **Labiba FAROOQ**.
 
 
