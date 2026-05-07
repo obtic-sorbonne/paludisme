@@ -77,6 +77,9 @@ doc_type_keywords:
     - "compte rendu des urgences"
     - "compte rendu de sejour"
     - "compte rendu de consultation"
+    - "compte rendu de consuliation"
+    - "compte rendu de consultaiton"
+    - "compte rendu de consullation"
     - "motif de la consultation"
     - "histoire de la maladie"
     - "examen clinique"
@@ -180,6 +183,33 @@ fields:
       - "Fébrile à"
       - "Temp.*?3[89]|4\\d"
     type: boolean_presence
+    priority: clinical_first
+
+  fièvre_J3:
+    patterns_positive:
+      - "fièvre"
+      - "fébrile"
+      - "Fébrile à"
+    patterns_negative:
+      - "sans fièvre"
+      - "apyrétique"
+      - "apyrexie"
+      - "afébrile"
+      - "apyrexie obtenue"
+    type: boolean_with_negative
+    priority: clinical_first
+
+  fièvre_J30:
+    patterns_positive:
+      - "fièvre"
+      - "fébrile"
+      - "Fébrile à"
+    patterns_negative:
+      - "sans fièvre"
+      - "apyrétique"
+      - "apyrexie"
+      - "afébrile"
+    type: boolean_with_negative
     priority: clinical_first
 
   vomissement_J0:

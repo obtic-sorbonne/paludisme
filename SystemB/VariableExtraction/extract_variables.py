@@ -366,7 +366,7 @@ def assign_timepoints(
             mid_dt     = parse_date(mid_date)
             days_delta = abs((mid_dt - j0_dt).days) if (j0_dt and mid_dt) else 999
 
-            if days_delta <= j0_merge_days:
+            if days_delta < j0_merge_days:  # strictly less than - exactly j0_merge_days goes to J3
                 # Merge into J0
                 groups["J0"].pages.extend(date_map[mid_date].pages)
             else:
@@ -526,6 +526,7 @@ def fill_timepoint(
     all_cnr: list[DocumentSection],
     fcfg: dict,
     tp_date: str,
+    all_clinical_text: str = "",
 ) -> None:
     """Fill all J{prefix} fields from the TimeGroup."""
     clinical = grp.clinical_text()
@@ -554,9 +555,16 @@ def fill_timepoint(
                  "convulsion","céphalées","pâleur","ictère"]:
         col = f"{base}_{prefix}"
         if col in COLUMNS and not row[col]:
-            cfg = fcfg.get(f"{base}_J0", {})
+            # Use timepoint-specific config if available, else fall back to J0 config
+            cfg = fcfg.get(f"{base}_{prefix}", fcfg.get(f"{base}_J0", {}))
             if cfg:
-                row[col] = detect_boolean(cfg, clinical + "\n" + all_text)
+                # For J0: use ALL clinical text (patient admitted with symptoms)
+                # For J3/J30: use only the timegroup text
+                if prefix == "J0":
+                    search_text = all_clinical_text + "\n" + all_text
+                else:
+                    search_text = clinical + "\n" + all_text
+                row[col] = detect_boolean(cfg, search_text)
 
     # ── Exam findings ─────────────────────────────────────────────────────────
     for base in ["Hépatomégalie","spénomégalie","raideur_nuque"]:
@@ -673,7 +681,7 @@ def extract_row(
             break
 
     # Symptom onset
-    v = get_cnr(all_cnr, "Date des Premiers Symptomes de cet accès")
+    v = get_cnr(all_cnr, "Date des Premiers Symptômes de cet accès") or         get_cnr(all_cnr, "Date des Premiers Symptomes de cet accès")
     row["date_premiers_symptomes"] = fmt_date(v) if v else ""
 
     # ── Prophylaxis ───────────────────────────────────────────────────────────
@@ -721,7 +729,7 @@ def extract_row(
     # ── J0 / J3 / J30 ────────────────────────────────────────────────────────
     for prefix in ["J0","J3","J30"]:
         fill_timepoint(row, prefix, groups[prefix], all_cnr, fcfg,
-                       tp_dates.get(prefix,""))
+                       tp_dates.get(prefix,""), all_clinical_text=clinical_text)
 
     return row
 
