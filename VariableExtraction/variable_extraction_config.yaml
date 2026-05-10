@@ -1,0 +1,484 @@
+# =============================================================================
+# variable_extraction_config.yaml
+# System B - Variable Extraction Configuration
+#
+# NEW INSTITUTION → Only edit the 4 sections marked ← EDIT THIS
+# Everything else is universal.
+# =============================================================================
+
+# ← EDIT THIS: Your institution's ward/service names
+institution:
+  name: "Hopital Robert Debre"
+  services:
+    - "PEDIATRIE GENERALE"
+    - "URGENCES PEDIATRIQUES"
+    - "URGENCES"
+    - "UHCD"
+    - "PORT"
+
+# ← EDIT THIS: Travel destination keywords → standardized names
+lieu_sejour_keywords:
+  "cote d'ivoire":  "Côte d'Ivoire"
+  "cote divoire":   "Côte d'Ivoire"
+  "ivory coast":    "Côte d'Ivoire"
+  "cameroun":       "Cameroun"
+  "mali":           "Mali"
+  "senegal":        "Sénégal"
+  "guinee":         "Guinée"
+  "nigeria":        "Nigéria"
+  "ghana":          "Ghana"
+  "togo":           "Togo"
+  "benin":          "Bénin"
+  "burkina":        "Burkina Faso"
+  "congo":          "Congo"
+  "gabon":          "Gabon"
+  "madagascar":     "Madagascar"
+  "mayotte":        "Mayotte"
+  "guyane":         "Guyane"
+  "martinique":     "Martinique"
+  "reunion":        "La Réunion"
+
+# ← EDIT THIS: Prophylaxis drug keywords → standardized names
+# FIX 1: Combined drug pairs MUST come before single drugs (first match wins)
+chimio_keywords:
+  # Combined pairs first
+  "nivaquine/ paludrine":       "Chloroquine+Proguanil"
+  "nivaquine/paludrine":        "Chloroquine+Proguanil"
+  "nivaquine et paludrine":     "Chloroquine+Proguanil"
+  "chloroquine et proguanil":   "Chloroquine+Proguanil"
+  "savarine":                   "Chloroquine+Proguanil"
+  "atovaquone et proguanil":    "Atovaquone+Proguanil"
+  "atovaquone/proguanil":       "Atovaquone+Proguanil"
+  # Single drugs after combined pairs
+  "nivaquine":                  "Chloroquine"
+  "chloroquine":                "Chloroquine"
+  "malarone":                   "Atovaquone+Proguanil"
+  "atovaquone":                 "Atovaquone+Proguanil"
+  "lariam":                     "Méfloquine"
+  "mefloquine":                 "Méfloquine"
+  "méfloquine":                 "Méfloquine"
+  "doxypalu":                   "Doxycycline"
+  "doxycycline":                "Doxycycline"
+  "paludrine":                  "Proguanil"
+  "proguanil":                  "Proguanil"
+
+# ← EDIT THIS: Treatment drug keywords → standardized names
+treatment_keywords:
+  "halfan":         "Halofantrine"
+  "halofantrine":   "Halofantrine"
+  "quinine iv":     "Quinine IV"
+  "quinine":        "Quinine"
+  "malarone":       "Atovaquone+Proguanil"
+  "riamet":         "Artéméther+Luméfantrine"
+  "coartem":        "Artéméther+Luméfantrine"
+  "lariam":         "Méfloquine"
+  "mefloquine":     "Méfloquine"
+  "eurartesim":     "Dihydroartémisinine+Pipéraquine"
+
+# =============================================================================
+# UNIVERSAL — Do not edit unless you know what you are doing
+# =============================================================================
+
+# J0/J3/J30 assignment: middle dates within this many days of J0 → merged to J0
+j0_merge_days: 3
+
+# Document type detection keywords (used to classify sections as clinical/lab)
+doc_type_keywords:
+  clinical:
+    - "compte rendu des urgences"
+    - "compte rendu de sejour"
+    - "compte rendu de consultation"
+    - "compte rendu de consuliation"
+    - "compte rendu de consultaiton"
+    - "compte rendu de consullation"
+    - "motif de la consultation"
+    - "histoire de la maladie"
+    - "examen clinique"
+    - "dossier patient d'urgence"
+    - "motif medical"
+    - "parametres a l'arrivee"
+  lab:
+    - "examens de sang"
+    - "examens d'hematologie"
+    - "biochimie generale"
+    - "cytologie"
+    - "hemoglobine....."
+    - "leucocytes....."
+    - "plaquettes....."
+    - "resultats d'une demande"
+    - "bilan hepatique"
+    - "ionogramme sanguin"
+
+# Field-level extraction patterns
+# priority: clinical_first = clinical doc wins; cnr_first = CNR form wins
+fields:
+
+  Sexe:
+    cnr_field: "Sexe"
+    patterns:
+      - "Sexe\\s*:\\s*([FM])"
+      - "Naiss.*?Sexe\\s*:\\s*([FM])"
+      - "Né\\(e\\).*?\\(([FM])\\)"
+    type: text
+    priority: clinical_first
+
+  Age:
+    patterns:
+      - "Age\\s*:\\s*(\\d+)a"
+      - "enfant de\\s+(\\d+)\\s+ans"
+    type: numeric
+    priority: clinical_first
+
+  Date_départ_séjour:
+    cnr_field: "Date départ"
+    patterns:
+      - "date de départ\\s*:\\s*(\\d{1,2}/\\d{2}/\\d{2,4})"
+      - "date de départ\\s*:\\s*(\\d{1,2}/\\d{2}/\\d{2})"
+    type: date
+    priority: clinical_first
+
+  Date_retour_séjour:
+    cnr_field: "Date retour"
+    patterns:
+      - "retour le\\s*(\\d{1,2}/\\d{2}/\\d{2,4})"
+    type: date
+    priority: clinical_first
+
+  Durée_zone_endémie:
+    patterns:
+      - "durée de\\s*(\\d+\\s*mois[^\\n]{0,20})"
+      - "séjour.*?d'une durée de\\s*([^\\n]{1,30})"
+    type: text
+    priority: clinical_first
+
+  # ── J0 Vitals ──────────────────────────────────────────────────────────────
+  Poids_J0:
+    cnr_field: "Poids (Kgs)"
+    patterns:
+      - "Poids\\s*(?:\\(Kg\\))?\\s*[:\\s]\\s*(\\d+(?:[.,]\\d+)?)"
+      - "Poids\\s*\\(Kgs\\)\\s*:\\s*(\\d+(?:[.,]\\d+)?)"
+      - "\\*\\s*Poids\\s+(\\d+(?:[.,]\\d+)?)\\s*kg"
+    type: numeric
+    priority: clinical_first
+
+  Température_J0:
+    patterns:
+      - "Temp(?:érature)?\\s*(?:\\(°C\\))?\\s*[:\\s]\\s*(\\d+(?:[.,]\\d+)?)"
+      - "Température\\s+(\\d+(?:[.,]\\d+)?)°C"
+      - "\\*\\s*Température\\s+(\\d+(?:[.,]\\d+)?)°C"
+      - "Temp\\s*:\\s*(\\d+(?:[.,]\\d+)?)"
+    type: numeric
+    priority: clinical_first
+
+  Fréquence_Cardiaque_J0:
+    patterns:
+      - "FC\\s*:\\s*(\\d+)"
+      - "Pouls\\s*\\(bts/min\\)\\s+(\\d+)"
+      - "Fréquence cardiaque\\s+(\\d+)/minute"
+      - "tachycardes\\s+(\\d+)/min"
+    type: numeric
+    priority: clinical_first
+
+  SaO2_J0:
+    patterns:
+      - "SaO2\\s*:\\s*(\\d+)"
+      - "Saturation sous air\\s+(\\d+)\\s*%"
+    type: numeric
+    priority: clinical_first
+
+  # ── J0 Symptoms ────────────────────────────────────────────────────────────
+  fièvre_J0:
+    patterns:
+      - "fièvre"
+      - "fébrile"
+      - "Fébrile à"
+      - "Temp.*?3[89]|4\\d"
+    type: boolean_presence
+    priority: clinical_first
+
+  # FIX 2: Added missing negative patterns for J3 fever
+  fièvre_J3:
+    patterns_positive:
+      - "fièvre"
+      - "fébrile"
+      - "Fébrile à"
+    patterns_negative:
+      - "sans fièvre"
+      - "apyrétique"
+      - "apyrexie"
+      - "afébrile"
+      - "apyrexie obtenue"
+      - "retour.*etat.*normal"
+      - "evolution favorable"
+    type: boolean_with_negative
+    priority: clinical_first
+
+  # FIX 3: Added missing negative patterns for J30 fever
+  fièvre_J30:
+    patterns_positive:
+      - "fièvre"
+      - "fébrile"
+      - "Fébrile à"
+    patterns_negative:
+      - "sans fièvre"
+      - "apyrétique"
+      - "apyrexie"
+      - "afébrile"
+      - "pas de fièvre"
+      - "examen clinique normal"
+      - "bilan.*normal"
+      - "va bien"
+    type: boolean_with_negative
+    priority: clinical_first
+
+  vomissement_J0:
+    patterns:
+      - "vomissement"
+      - "vomissait"
+      - "vomit"
+    type: boolean_presence
+    priority: clinical_first
+
+  diarrhées_J0:
+    patterns:
+      - "diarrhée"
+      - "diarrhees"
+    type: boolean_presence
+    priority: clinical_first
+
+  nausée_J0:
+    patterns:
+      - "nausée"
+      - "nausees"
+    type: boolean_presence
+    priority: clinical_first
+
+  anorexie_J0:
+    patterns:
+      - "anorexie"
+      - "refus alimentaire"
+      - "n'mange pas"
+    type: boolean_presence
+    priority: clinical_first
+
+  asthénie_J0:
+    patterns:
+      - "asthénie"
+      - "asthenie"
+      - "asthénique"
+    type: boolean_presence
+    priority: clinical_first
+
+  céphalées_J0:
+    patterns:
+      - "céphalées"
+      - "cephalees"
+    type: boolean_presence
+    priority: clinical_first
+
+  trouble_conscience_J0:
+    patterns:
+      - "trouble.*?conscience"
+      - "prostrée"
+      - "somnolente"
+      - "propos incohérents"
+      - "glasgow\\s+1[0-3]"
+    type: boolean_presence
+    priority: clinical_first
+
+  convulsion_J0:
+    patterns_positive:
+      - "convulsion"
+    patterns_negative:
+      - "pas de convulsion"
+      - "sans convulsion"
+    type: boolean_with_negative
+    priority: clinical_first
+
+  pâleur_J0:
+    patterns:
+      - "pâleur"
+      - "paleur"
+      - "pâteur"
+      - "pâle"
+      - "Coloration\\s+Pâle"
+    type: boolean_presence
+    priority: clinical_first
+
+  ictère_J0:
+    patterns:
+      - "ictère"
+      - "ictere"
+      - "Ictere\\s+oui"
+    type: boolean_presence
+    priority: clinical_first
+
+  raideur_nuque_J0:
+    patterns_positive:
+      - "raideur méningée"
+      - "raideur de nuque"
+    patterns_negative:
+      - "pas de raideur méningée"
+      - "nuque souple"
+    type: boolean_with_negative
+    priority: clinical_first
+
+  Hépatomégalie_J0:
+    patterns_positive:
+      - "hépatomégalie"
+      - "hepatomegalie"
+    patterns_negative:
+      - "pas.*?hépatomégalie"
+      - "sans hépato"
+      - "sans hépatosplénomégalie"
+    type: boolean_with_negative
+    priority: clinical_first
+
+  spénomégalie_J0:
+    patterns_positive:
+      - "splénomégalie"
+      - "splenomegalie"
+    patterns_negative:
+      - "pas.*?splénomégalie"
+      - "sans.*?splénomégalie"
+      - "sans hépatosplénomégalie"
+      - "sans hepatosplenomegalie"
+      - "pas d.organomégalie"
+    type: boolean_with_negative
+    priority: clinical_first
+
+  # ── Lab values (J0) ────────────────────────────────────────────────────────
+  # FIX 6 (partial): Added markdown table pattern to ASAT and ALAT
+  ASAT_J0:
+    patterns:
+      - "ASAT\\s+(\\d+(?:[.,]\\d+)?)\\s*(?:\\+|-)?\\s*U[Il1]"
+      - "ASAT\\s*\\(U[Il1]/[lLiI1]\\)\\s*\\|\\s*(\\d+)"
+      - "^ASAT\\s+(\\d+)"
+      - "\\|\\s*ASAT\\s*\\(UI/l\\)\\s*\\|\\s*(\\d+)"
+    type: numeric
+    priority: clinical_first
+
+  ALAT_J0:
+    patterns:
+      - "ALAT\\s+(\\d+(?:[.,]\\d+)?)\\s*(?:\\+|-)?\\s*U[Il1]"
+      - "ALAT\\s*\\(U[Il1]/[lLiI1]\\)\\s*\\|\\s*(\\d+)"
+      - "^ALAT\\s+(\\d+)"
+      - "\\|\\s*ALAT\\s*\\(UI/l\\)\\s*\\|\\s*(\\d+)"
+    type: numeric
+    priority: clinical_first
+
+  bilirubine_J0:
+    patterns:
+      - "Bilirubine Totale\\s+(\\d+)\\s*(?:\\+|-)?\\s*u?mol"
+      - "Bilirubine totale.*?\\|\\s*(\\d+)"
+    type: numeric
+    priority: clinical_first
+
+  Urée_J0:
+    patterns:
+      - "Uree\\s+(\\d+(?:[.,]\\d+)?)"
+      - "Urée\\s*\\(mmol/l\\)\\s*\\|\\s*(\\d+(?:[.,]\\d+)?)"
+    type: numeric
+    priority: clinical_first
+
+  Créatinine_J0:
+    patterns:
+      - "Creatinine\\s+(\\d+)"
+      - "Créatinine.*?\\|\\s*(\\d+)"
+    type: numeric
+    priority: clinical_first
+
+  CRP_J0:
+    patterns:
+      - "CRP\\s+(\\d+(?:[.,]\\d+)?)\\s*(?:\\+|-)?\\s*mg"
+      - "CRP\\s*:\\s*(\\d+(?:[.,]\\d+)?)"
+      - "\\*\\s*CRP\\s+(\\d+(?:[.,]\\d+)?)\\s*mg"
+    type: numeric
+    priority: clinical_first
+
+  # ── Parasitology (J0) ──────────────────────────────────────────────────────
+  Parasitémie_J0:
+    cnr_field: "Densité parasitaire"
+    patterns:
+      - "Parasitemie\\s*:\\s*(\\d+(?:[.,]\\d+)?)\\s*%"
+      - "Parasitémie.*?(\\d+(?:[.,]\\d+)?)\\s*%"
+    type: numeric
+    priority: clinical_first
+
+  Frottis_sanguin_J0:
+    cnr_field: "Statut"
+    patterns_positive:
+      - "presence de trophozoites"
+      - "présence de trophozoïtes"
+      - "parasitemie.*?\\d"
+    patterns_negative:
+      - "il n'a pas ete vu de parasites"
+      - "pas de parasites"
+    type: boolean_with_negative
+    priority: clinical_first
+
+  HRP2_J0:
+    cnr_field: "Bandelettes résultat"
+    patterns_positive:
+      - "POSITIVE"
+      - "positif Ag P falciparum"
+    patterns_negative:
+      - "NEGATIVE"
+      - "negatif"
+    type: boolean_with_negative
+    priority: cnr_first
+
+  # ── Severity & treatment ───────────────────────────────────────────────────
+  gravité_palu:
+    cnr_field: "Etat clinique au moment du diagnostic"
+    patterns_severe:
+      - "grave"
+      - "accès grave"
+      - "neuropaludisme"
+      - "accès palustre grave"
+      - "accès palustre sévère"
+      - "accès palustre pernicieux"
+      - "troubles de conscience"
+    patterns_simple:
+      - "accès simple"
+      - "sans vomissements"
+    type: severity
+    priority: clinical_first
+
+  Perfusion:
+    patterns:
+      - "quinine iv"
+      - "perfusion"
+    type: boolean_presence
+    priority: clinical_first
+
+  ECG:
+    patterns:
+      - "ECG"
+      - "électrocardiogramme"
+    type: boolean_presence
+    priority: clinical_first
+
+  # ── J3 CNR fields ──────────────────────────────────────────────────────────
+  Température_J3:
+    cnr_field: "J3 ou J4 Température"
+    patterns: []
+    type: numeric
+    priority: cnr_first
+
+  Frottis_sanguin_J3:
+    cnr_field: "J3 ou J4 Parasitologie"
+    patterns_negative:
+      - "Absence"
+      - "il n'a pas ete vu de parasites"
+    type: boolean_with_negative
+    priority: cnr_first
+
+  # ── J30 ────────────────────────────────────────────────────────────────────
+  Frottis_sanguin_J30:
+    patterns_negative:
+      - "il n'a pas ete vu de parasites"
+      - "bilan hématologique normal"
+      - "bilan normal"
+    type: boolean_with_negative
+    priority: clinical_first

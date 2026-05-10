@@ -1,0 +1,143 @@
+# =============================================================================
+# anonymization_config.yaml
+# System B - Universal Anonymization Configuration
+#
+# With Qwen NER enabled, you do NOT need safe_words for names.
+# Qwen understands medical context and ignores lab terms automatically.
+# Only add safe_words if regex patterns cause false positives.
+# =============================================================================
+
+institution:
+  name: "Hopital Robert Debre"
+  city: "Paris"
+  known_services:
+    - "Service des Urgences Pediatriques"
+    - "Pediatrie Generale"
+    - "Centre de Prelevement"
+
+# ---------------------------------------------------------------------------
+# SENSITIVE FIELDS - label: value pairs where value gets anonymized
+# ---------------------------------------------------------------------------
+sensitive_fields:
+  - "Nom"
+  - "Prenom"
+  - "Nom patient"
+  - "NIP"
+  - "NPI"
+  - "NDA"
+  - "ID patient"
+  - "Adresse"
+  - "Patient adresse"
+  - "Adresse des parents"
+  - "Personne a prevenir"
+  - "Tel"
+  - "Telephone"
+  - "Fax"
+  - "N de sejour"
+  - "N dossier"
+
+# ---------------------------------------------------------------------------
+# SAFE WORDS
+# With Qwen NER, this list is much smaller - only needed to protect
+# regex patterns from false positives (not needed for name detection).
+# Add a word here ONLY if a regex pattern wrongly anonymizes it.
+# ---------------------------------------------------------------------------
+safe_words:
+  - "Paris"
+  - "France"
+
+# ---------------------------------------------------------------------------
+# PATTERN DETECTORS
+# ---------------------------------------------------------------------------
+pattern_detectors:
+  social_security_number: true
+  hospital_patient_id: true
+  npi_identifier: true
+  sejour_id: true
+  finess_number: true
+  lab_request_id: true
+  phone_number: true
+  email_address: true
+  street_address: true
+  postal_code: true
+
+# ---------------------------------------------------------------------------
+# QWEN NER - local Qwen 7B for context-aware name extraction
+# No safe_words needed - Qwen understands medical context.
+# Truly universal - works for any institution, any language.
+# ---------------------------------------------------------------------------
+qwen_ner:
+  enabled: true
+  model: "qwen2.5vl:7b"
+  url: "http://localhost:11434/api/generate"
+  chunk_chars: 3000
+
+# ---------------------------------------------------------------------------
+# NAME CONTEXT LABELS - structural patterns for labeled names
+# These catch names that appear with a role label before them.
+# Qwen handles free-text names; these handle structured document formats.
+# ---------------------------------------------------------------------------
+name_context_labels:
+  - "Valide par"
+  - "Validee par"
+  - "Copie a"
+  - "Relecture par"
+  - "Interne(s)"
+  - "Medecin(s) senior(s)"
+  - "Chef de Service"
+  - "Docteur"
+  - "Dr."
+  - "Dr "
+  - "Pr."
+  - "Pr "
+  - "Professeur"
+  - "Personne a prevenir"
+  - "Coordonnees de la personne a prevenir"
+  - "Mr et Mme"
+  - "Prescrit par"
+  - "Signe par"
+
+multiline_context_labels:
+  - "Valide par"
+  - "Validee par"
+  - "Chef de Service"
+  - "Copie a"
+
+name_formats:
+  lastname_comma_firstname: true
+  allcaps_then_firstname: false
+  firstname_lastname_freetext: false
+
+free_text_name_triggers:
+  - phrase: "mise au courant"
+    position: "before"
+  - phrase: "mis au courant"
+    position: "before"
+
+# ---------------------------------------------------------------------------
+# TABLE SCHEMAS
+# ---------------------------------------------------------------------------
+table_schemas:
+  - name: "Ionogramme sanguin"
+    trigger: "ionogramme sanguin"
+    header_in_first_col: true
+    rows:
+      - "Sodium (mmol/l)"
+      - "Potassium (mmol/l)"
+      - "Chlore (mmol/l)"
+      - "Bicarbonates (mmol/l)"
+      - "Proteines (g/l)"
+      - "Uree (mmol/l)"
+      - "Creatinine (umol/l)"
+
+  - name: "Bilan hepatique"
+    trigger: "bilan hepatique"
+    header_in_first_col: false
+    rows:
+      - "Phosphatases alcalines (UI/l)"
+      - "Bilirubine totale (umol/l)"
+      - "Bilirubine conjuguee (umol/l)"
+      - "ASAT (UI/l)"
+      - "ALAT (UI/l)"
+      - "Gamma GT (UI/l)"
+      - "Pre albumine (g/l)"
