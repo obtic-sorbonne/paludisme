@@ -1,0 +1,498 @@
+# =============================================================================
+# extraction_fields.yaml
+# System B — Qwen Q&A Field Definitions
+#
+# HOW TO ADD A NEW VARIABLE:
+#   1. Add a new entry with the column name as the key
+#   2. Write a plain-language question in French or English
+#   3. Set the section (demographics / J0 / J0_lab / J3 / J3_lab /
+#                       J30 / J30_lab / treatment)
+#   4. Set the type (boolean / numeric / text / date)
+#   5. Optional: add a hint for clarification
+#
+# That's it. No regex. No patterns. Just questions.
+#
+# FOR A NEW DISEASE (tuberculosis, dengue, HIV, etc.):
+#   Replace the questions below with your disease-specific questions.
+#   Keep the same section/type structure.
+# =============================================================================
+
+# ── Demographics & Travel ─────────────────────────────────────────────────────
+
+Sexe:
+  section: demographics
+  type: text
+  question: "What is the patient's biological sex? Answer M or F."
+  hint: "Look for Sexe: M or F, or Né(e)"
+
+Age:
+  section: demographics
+  type: numeric
+  question: "What is the patient's age in years at the time of consultation?"
+  hint: "Look for Age: Xa or enfant de X ans"
+
+Pays_de_naissance:
+  section: demographics
+  type: text
+  question: "What is the patient's country of birth?"
+  hint: "Look for Pays de naissance in the CNR form"
+
+Date_départ_séjour:
+  section: demographics
+  type: date
+  question: "What is the date the patient departed for the endemic zone? Format DD/MM/YYYY."
+
+Date_retour_séjour:
+  section: demographics
+  type: date
+  question: "What is the date the patient returned from the endemic zone? Format DD/MM/YYYY."
+  hint: "Look for 'retour le', 'revenu le', 'rentré le', or CNR 'Date retour'"
+
+Durée_zone_endémie:
+  section: demographics
+  type: text
+  question: "How long did the patient stay in the endemic zone? Express as number of days, weeks, or months."
+  hint: "e.g. '3 semaines', '45 jours', '2 mois'. If not explicitly stated, leave empty."
+
+Lieu_séjour:
+  section: demographics
+  type: text
+  question: "Which country or region did the patient travel to for the malaria exposure?"
+  hint: "e.g. Côte d'Ivoire, Mali, Cameroun, Sénégal"
+
+chimioprophylaxie:
+  section: demographics
+  type: text
+  question: "What antimalarial prophylaxis drug did the patient take before or during the trip? Give the exact drug name found in text. Examples: Nivaquine=Chloroquine, Paludrine=Proguanil, Nivaquine/Paludrine=Chloroquine+Proguanil, Savarine=Chloroquine+Proguanil, Lariam=Méfloquine, Malarone=Atovaquone+Proguanil. Return the standardized name: Chloroquine, Proguanil, Chloroquine+Proguanil, Méfloquine, Atovaquone+Proguanil, or Doxycycline. If no prophylaxis taken, return empty string."
+  hint: "Look for Nivaquine=Chloroquine, Lariam=Méfloquine, Savarine=Chloroquine+Proguanil, Malarone=Atovaquone+Proguanil. If patient took no prophylaxis or CNR says Non, answer empty string."
+
+moustiquaire_imp:
+  section: demographics
+  type: boolean
+  question: "Did the patient sleep under an impregnated mosquito net during their stay? Answer Oui, Non, or NSP if uncertain."
+  hint: "Look for 'moustiquaire', 'ne dormait pas sous une moustiquaire' = Non. NSP if not mentioned."
+
+palu_ant:
+  section: demographics
+  type: boolean
+  question: "Does the patient have a history of prior malaria episodes (in the past 3 months or previously)?"
+  hint: "'Antécédents de paludisme' = Oui. 'pas d'antécédent de palu' or 'ATCD=0' = Non."
+
+date_premiers_symptomes:
+  section: demographics
+  type: date
+  question: "What is the date of onset of the first symptoms of this malaria episode? Format DD/MM/YYYY."
+
+# ── J0 — Admission Symptoms ───────────────────────────────────────────────────
+
+fièvre_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have fever at admission (J0)?"
+  hint: "'fièvre', 'fébrile', 'Temp > 38°C' = Oui. 'apyrétique' = Non."
+
+anorexie_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have loss of appetite (anorexia) at admission?"
+  hint: "'anorexie', 'refus alimentaire', 'ne mange pas' = Oui"
+
+diarrhées_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have diarrhea at or before admission? Look for 'diarrhée', 'selles liquides'."
+  hint: "'diarrhée', 'selles liquides', 'selles molles' = Oui. 'pas de diarrhée' = Non."
+
+vomissement_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have vomiting at or before admission? Look for 'vomissements', 'vomit' in history or clinical exam."
+  hint: "'vomissement', 'vomit' = Oui. 'pas de vomissement' = Non."
+
+nausée_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have nausea at admission?"
+
+asthénie_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have fatigue or asthenia at admission?"
+  hint: "'asthénie', 'asthénique', 'fatigue' = Oui"
+
+céphalées_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have headaches at or before admission? Look for 'céphalées', 'maux de tête' in history or exam."
+  hint: "'céphalées', 'maux de tête' = Oui. 'pas de céphalée' = Non."
+
+douleurs_abdominales_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have abdominal pain at admission?"
+  hint: "'douleur abdominale', 'abdomen sensible' = Oui"
+
+trouble_conscience_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have altered consciousness or confusion at admission?"
+  hint: "'trouble de conscience', 'confusion', 'obnubilation', 'syndrome confusionnel' = Oui"
+
+convulsion_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have convulsions at admission?"
+  hint: "'convulsion' = Oui. 'pas de convulsion' = Non."
+
+Poids_J0:
+  section: J0
+  type: numeric
+  question: "What is the patient's weight in kg at admission?"
+  hint: "Extract number only, e.g. '21' from 'Poids: 21 kg'"
+
+Température_J0:
+  section: J0
+  type: numeric
+  question: "What is the patient's temperature in °C at admission?"
+  hint: "Extract number only, e.g. '38.6' from 'Temp: 38.6' or 'Température = 37°8'"
+
+Fréquence_Cardiaque_J0:
+  section: J0
+  type: numeric
+  question: "What is the patient's heart rate in beats per minute at admission?"
+  hint: "Look for FC, Pouls, Fréquence cardiaque. Extract number only."
+
+SaO2_J0:
+  section: J0
+  type: numeric
+  question: "What is the patient's oxygen saturation (SaO2 or SpO2) in % at admission?"
+
+Hépatomégalie_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have hepatomegaly (enlarged liver) at admission?"
+  hint: "'hépatomégalie', 'HPM', 'foie à X cm' = Oui. 'pas d'hépatomégalie', 'pas hsm', 'pas d'HM' = Non."
+
+spénomégalie_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have splenomegaly (enlarged spleen) at admission?"
+  hint: "'splénomégalie', 'SMG', 'rate palpable' = Oui. 'pas de splénomégalie', 'pas hsm', 'pas de rate palpée' = Non."
+
+pâleur_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have pallor (pale skin or conjunctiva) at admission?"
+  hint: "'pâleur cutanée', 'conjonctives pâles' = Oui. 'pas de pâleur', 'conjonctives bien colorées' = Non."
+
+ictère_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have jaundice (icterus) at admission?"
+  hint: "'ictère', 'subictère', 'Ictere: oui' = Oui. 'pas d'ictère', 'non ictérique' = Non."
+
+raideur_nuque_J0:
+  section: J0
+  type: boolean
+  question: "Does the patient have neck stiffness (meningeal syndrome) at admission?"
+  hint: "'raideur de nuque', 'raideur méningée', 'syndrome méningé' = Oui. 'nuque souple' = Non."
+
+Goutte_épaisse_J0:
+  section: J0
+  type: text
+  question: "Was a thick blood smear (goutte épaisse) performed at admission? Answer: Fait, Non fait, or Positif/Négatif if result known."
+
+Frottis_sanguin_J0:
+  section: J0
+  type: boolean
+  question: "Was the blood smear (frottis sanguin) positive for malaria parasites at admission?"
+  hint: "'présence de trophozoïtes', 'positif', parasitemia mentioned = Oui. 'négatif', 'pas de parasites' = Non."
+
+Parasitémie_J0:
+  section: J0
+  type: numeric
+  question: "What is the parasitemia percentage at admission?"
+  hint: "Extract number only, e.g. '3.6' from 'parasitémie: 3.6%' or 'parasitémie à 0.5%'"
+
+HRP2_J0:
+  section: J0
+  type: boolean
+  question: "Was the HRP2 rapid diagnostic test (antigénémie, bandelette) positive at admission?"
+  hint: "'POSITIVE' near HRP2 or immunochromatographie = Oui. 'NEGATIVE' = Non. If not done = empty."
+
+# ── J0 Lab Results ────────────────────────────────────────────────────────────
+
+hémoglobine_J0:
+  section: J0_lab
+  type: numeric
+  question: "What is the hemoglobin level in g/dl at admission (J0)?"
+  hint: "Look for 'Hemoglobine' in lab results. Convert g/l to g/dl if needed (divide by 10 if value > 30)."
+
+plaquettes_J0:
+  section: J0_lab
+  type: numeric
+  question: "What is the platelet count in giga/l (or x10³/mm³) at admission (J0)?"
+  hint: "Extract number only. e.g. '94' from 'PLAQUETTES: 94 10x3/mm3'"
+
+globules_blancs_J0:
+  section: J0_lab
+  type: numeric
+  question: "What is the white blood cell count in giga/l (or x10³/mm³) at admission (J0)?"
+  hint: "Look for LEUCOCYTES. Extract number only."
+
+ASAT_J0:
+  section: J0_lab
+  type: numeric
+  question: "What is the ASAT (AST) value in UI/l at admission (J0)?"
+  hint: "Look for ASAT in lab results or in narrative text like 'ASAT: 75'"
+
+ALAT_J0:
+  section: J0_lab
+  type: numeric
+  question: "What is the ALAT (ALT) value in UI/l at admission (J0)?"
+
+bilirubine_J0:
+  section: J0_lab
+  type: numeric
+  question: "What is the total bilirubin value in µmol/l at admission (J0)?"
+  hint: "Look for 'Bilirubine Totale'"
+
+Urée_J0:
+  section: J0_lab
+  type: numeric
+  question: "What is the urea value in mmol/l at admission (J0)?"
+  hint: "Look for 'Uree' or 'Urée'"
+
+Créatinine_J0:
+  section: J0_lab
+  type: numeric
+  question: "What is the creatinine value in µmol/l at admission (J0)?"
+
+CRP_J0:
+  section: J0_lab
+  type: numeric
+  question: "What is the CRP (C-reactive protein) value in mg/l at admission (J0)?"
+
+PCT_J0:
+  section: J0_lab
+  type: numeric
+  question: "What is the procalcitonin (PCT) value in µg/l at admission (J0)?"
+  hint: "Look for 'Procalcitonine' in lab results"
+
+# ── J3 — Follow-up ────────────────────────────────────────────────────────────
+
+fièvre_J3:
+  section: J3
+  type: boolean
+  question: "Does the patient have fever at the J3 follow-up visit?"
+  hint: "'apyrétique', 'apyrexie', 'pas de fièvre', 'examen clinique normal' = Non. 'fébrile', 'fièvre' = Oui."
+
+vomissement_J3:
+  section: J3
+  type: boolean
+  question: "Does the patient have vomiting at J3?"
+  hint: "'pas de vomissement', 'alimentation normale', 'mange bien' = Non."
+
+diarrhées_J3:
+  section: J3
+  type: boolean
+  question: "Does the patient have diarrhea at J3?"
+
+nausée_J3:
+  section: J3
+  type: boolean
+  question: "Does the patient have nausea at J3?"
+
+anorexie_J3:
+  section: J3
+  type: boolean
+  question: "Does the patient have loss of appetite at J3?"
+  hint: "'mange bien', 'reprise de l'alimentation', 'bonne prise alimentaire' = Non."
+
+asthénie_J3:
+  section: J3
+  type: boolean
+  question: "Does the patient have fatigue at J3?"
+  hint: "'bon état général', 'BEG', 'en pleine forme' = Non."
+
+céphalées_J3:
+  section: J3
+  type: boolean
+  question: "Does the patient have headaches at J3?"
+
+douleurs_abdominales_J3:
+  section: J3
+  type: boolean
+  question: "Does the patient have abdominal pain at J3?"
+  hint: "'abdomen souple', 'pas de douleur abdominale' = Non."
+
+spénomégalie_J3:
+  section: J3
+  type: boolean
+  question: "Does the patient have splenomegaly at J3?"
+  hint: "'pas de splénomégalie', 'pas hsm' = Non."
+
+Poids_J3:
+  section: J3
+  type: numeric
+  question: "What is the patient's weight in kg at J3?"
+
+Température_J3:
+  section: J3
+  type: numeric
+  question: "What is the patient's temperature in °C at J3?"
+
+Frottis_sanguin_J3:
+  section: J3
+  type: boolean
+  question: "Was the blood smear positive for malaria parasites at J3?"
+  hint: "'négatif', 'pas de parasites', 'Absence' = Non. 'positif', 'trophozoïtes' = Oui."
+
+hémoglobine_J3:
+  section: J3_lab
+  type: numeric
+  question: "What is the hemoglobin in g/dl at J3?"
+
+plaquettes_J3:
+  section: J3_lab
+  type: numeric
+  question: "What is the platelet count in giga/l at J3?"
+
+globules_blancs_J3:
+  section: J3_lab
+  type: numeric
+  question: "What is the white blood cell count in giga/l at J3?"
+
+ASAT_J3:
+  section: J3_lab
+  type: numeric
+  question: "What is the ASAT value in UI/l at J3?"
+  hint: "May appear in lab table or in narrative text like 'ASAT: 119'"
+
+ALAT_J3:
+  section: J3_lab
+  type: numeric
+  question: "What is the ALAT value in UI/l at J3?"
+
+bilirubine_J3:
+  section: J3_lab
+  type: numeric
+  question: "What is the total bilirubin in µmol/l at J3?"
+
+# ── J30 — Outcome ─────────────────────────────────────────────────────────────
+
+fièvre_J30:
+  section: J30
+  type: boolean
+  question: "Does the patient have fever at the J30 follow-up visit?"
+  hint: "'apyrétique', 'pas de fièvre', 'examen normal', 'va bien' = Non. If J30 is lab-only with no clinical note, answer Non."
+
+vomissement_J30:
+  section: J30
+  type: boolean
+  question: "Does the patient have vomiting at J30?"
+
+diarrhées_J30:
+  section: J30
+  type: boolean
+  question: "Does the patient have diarrhea at J30?"
+
+anorexie_J30:
+  section: J30
+  type: boolean
+  question: "Does the patient have loss of appetite at J30?"
+  hint: "'mange bien', 'va bien', 'alimentation normale' = Non."
+
+Poids_J30:
+  section: J30
+  type: numeric
+  question: "What is the patient's weight in kg at J30?"
+
+Température_J30:
+  section: J30
+  type: numeric
+  question: "What is the patient's temperature in °C at J30?"
+
+Frottis_sanguin_J30:
+  section: J30
+  type: boolean
+  question: "Was the blood smear positive for malaria parasites at J30?"
+
+hémoglobine_J30:
+  section: J30_lab
+  type: numeric
+  question: "What is the hemoglobin in g/dl at J30?"
+
+plaquettes_J30:
+  section: J30_lab
+  type: numeric
+  question: "What is the platelet count in giga/l at J30?"
+
+globules_blancs_J30:
+  section: J30_lab
+  type: numeric
+  question: "What is the white blood cell count in giga/l at J30?"
+
+ASAT_J30:
+  section: J30_lab
+  type: numeric
+  question: "What is the ASAT value in UI/l at J30?"
+
+ALAT_J30:
+  section: J30_lab
+  type: numeric
+  question: "What is the ALAT value in UI/l at J30?"
+
+# ── Treatment & Outcome ───────────────────────────────────────────────────────
+
+Type_paludisme:
+  section: treatment
+  type: text
+  question: "What Plasmodium species caused the malaria? e.g. P. falciparum, P. ovale, P. vivax, P. malariae."
+  hint: "Look in the frottis result text or CNR form Espèce(s) field. Be precise — do not default to falciparum."
+
+gravité_palu:
+  section: treatment
+  type: text
+  question: "What is the severity of this malaria episode? Look for: 'accès grave', 'accès palustre grave', 'neuropaludisme', 'paludisme sévère', 'troubles de conscience', 'prostration', 'somnolence', 'propos incohérents' = grave. 'accès simple', 'sans signe de gravité' = simple. Answer grave or simple only."
+  hint: "'neuropaludisme', 'accès grave', 'paludisme sévère', 'troubles de conscience' = grave. 'accès simple', 'sans signe de gravité' = simple."
+
+Traitement_antipalu:
+  section: treatment
+  type: text
+  question: "What antimalarial drugs were given to treat this malaria episode? Look for: Halfan, Halofantrine, Quinine, Malarone, Riamet, Lariam, Méfloquine. List ALL drugs mentioned as treatment (not prophylaxis). Example: 'Halofantrine (Halfan) puis Quinine IV'."
+  hint: "e.g. 'Halofantrine (Halfan®)', 'Atovaquone + Proguanil (Malarone®)', 'Quinine IV'. Include all lines of treatment."
+
+Durée_traitement:
+  section: treatment
+  type: numeric
+  question: "How many days did the antimalarial treatment last?"
+
+Perfusion:
+  section: treatment
+  type: boolean
+  question: "Did the patient receive intravenous treatment (perfusion/IV)?"
+  hint: "'Quinine IV', 'quinine intra-veineuse', 'voie veineuse' = Oui."
+
+Hospitalisation:
+  section: treatment
+  type: boolean
+  question: "Was the patient hospitalized?"
+  hint: "'hospitalisé', 'UHCD', 'admission dans un service' = Oui."
+
+Durée_hospit:
+  section: treatment
+  type: numeric
+  question: "How many days was the patient hospitalized?"
+
+type_service:
+  section: treatment
+  type: text
+  question: "In which hospital service/ward was the patient treated?"
+  hint: "e.g. URGENCES PEDIATRIQUES, PEDIATRIE GENERALE, REANIMATION"
+
+ECG:
+  section: treatment
+  type: boolean
+  question: "Was an ECG (electrocardiogram) performed?"
+  hint: "'ECG', 'électrocardiogramme', 'QT corrigé' = Oui."
