@@ -168,7 +168,7 @@ Fréquence_Cardiaque_J0:
   section: J0
   type: numeric
   question: "What is the patient's heart rate in beats per minute at admission?"
-  hint: "Look for FC, Pouls, Fréquence cardiaque. Extract number only."
+  hint: "Look for FC, Pouls, Fréquence cardiaque. Also look in narrative text like 'fc 120/min', 'Auscultation cardiaque normale fc 126/min', 'Pouls 117/mn'. Extract number only."
 
 SaO2_J0:
   section: J0

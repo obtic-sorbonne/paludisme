@@ -675,6 +675,18 @@ def extract_row(patient_id: str, parsed: dict, groups: dict,
     if groups["J30"]["text"].strip():
         row["PDV_J30"] = "Oui"
 
+    # fièvre_J30 default: if J30 text has no clinical note → Non
+    if not row.get("fièvre_J30") and groups["J30"]["text"].strip():
+        j30_clinical_keywords = ["apyretique", "apyrexie", "fievre", "febrile",
+                                  "temperature", "temp", "examen clinique",
+                                  "etat general", "beg", "va bien"]
+        import unicodedata
+        j30_norm = unicodedata.normalize("NFKD", groups["J30"]["text"].lower())
+        j30_norm = "".join(c for c in j30_norm if not unicodedata.combining(c))
+        has_clinical = any(kw in j30_norm for kw in j30_clinical_keywords)
+        if not has_clinical:
+            row["fièvre_J30"] = "Non"  # lab-only J30, no clinical note
+
     # ── Section 6: Treatment ──────────────────────────────────────────────────
     print("    [6/6] Treatment & outcome...")
     treat_fields = {k: v for k, v in fields_cfg.items()
