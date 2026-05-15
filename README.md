@@ -19,10 +19,8 @@ Fully automated pipeline: scanned PDFs → anonymized text → structured resear
 **All processing is 100% local. No patient data ever leaves your server.**
 
 ---
-Now I have the full picture. Let me write the complete updated README for SystemB with everything we've done:
 
 ```bash
-cat > ~/digitize_medical_records/SystemB/README.md << 'README_EOF'
 # System B – CNR Paludisme Medical Digitization Pipeline
 
 Fully automated pipeline: scanned PDFs → anonymized text → structured research table (Excel + SQLite).
