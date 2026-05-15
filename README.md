@@ -18,8 +18,6 @@ Fully automated pipeline: scanned PDFs → anonymized text → structured resear
 
 **All processing is 100% local. No patient data ever leaves your server.**
 
-Here's the complete README — copy everything between the lines:
-
 ---
 
 ```markdown
