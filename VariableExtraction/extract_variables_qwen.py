@@ -236,12 +236,13 @@ def page_date(text: str) -> str:
 def _has_explicit_j3_label(pages: list) -> bool:
     """Check if any page is explicitly labeled as J3/J4 follow-up."""
     j3_patterns = [
-        r"contr[oô]le\s*j\s*[34]",
+        r"cont[r]?[oô]le\s*j\s*[34]",   # handles OCR typo Contole J3
         r"suivi\s*j\s*[34]",
-        r"j\s*[34]\s*(?:de|du|pour|palu|paludisme|contr[oô]le)",
+        r"j\s*[34]\s*(?:de|du|pour|palu|paludisme|cont[r]?[oô]le)",
         r"\bj\s*[34]\s*(?:frottis|parasit|nfs|bilan)",
         r"revient\s*[\xe0a]\s*j\s*[34]",
         r"retour\s*[\xe0a]\s*j\s*[34]",
+        r"controle\s*j\s*[34]",
     ]
     for _, pg in pages:
         text_lower = pg["text"].lower()
@@ -305,11 +306,13 @@ def assign_timepoints(parsed: dict, j0_merge_days: int = 3) -> dict:
         for d in sorted_dates[1:-1]:
             d_dt = parse_date(d)
             delta = abs((d_dt - j0_dt).days) if (j0_dt and d_dt) else 999
-            if delta <= j0_merge_days:
+            # Explicit J3 label always wins — never merge into J0 even if within merge window
+            if j3_explicit_date is None and _has_explicit_j3_label(date_pages[d]):
+                j3_explicit_date = d
+                groups["J3"].extend(pg["text"] for _, pg in date_pages[d])
+            elif delta <= j0_merge_days:
                 groups["J0"].extend(pg["text"] for _, pg in date_pages[d])
             else:
-                if j3_explicit_date is None and _has_explicit_j3_label(date_pages[d]):
-                    j3_explicit_date = d
                 if 2 <= delta <= 5:
                     j3_window_dates.append(d)
                 groups["J3"].extend(pg["text"] for _, pg in date_pages[d])
