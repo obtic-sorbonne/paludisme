@@ -24,6 +24,7 @@ import os, sys, argparse, tempfile, time, re
 from pathlib import Path
 from PIL import Image
 import ollama
+import os as _os_env
 
 MODEL = "qwen2.5vl:72b"
 
@@ -254,7 +255,9 @@ def to_jpeg(png_path):
 def query_qwen(image_path, model=MODEL):
     if image_path.lower().endswith(".png"):
         image_path = to_jpeg(image_path)
-    response = ollama.chat(
+    _ollama_host = _os_env.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+    _client = ollama.Client(host=_ollama_host)
+    response = _client.chat(
         model=model,
         messages=[{"role": "user", "content": PROMPT, "images": [image_path]}]
     )

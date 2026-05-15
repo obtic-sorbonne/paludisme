@@ -58,6 +58,7 @@ def classify_with_qwen(image_path: str, model: str = CLASSIFY_MODEL) -> dict:
     """
     try:
         import ollama
+        import os as _os
     except ImportError:
         print("  ERROR: ollama not installed. Run: pip install ollama")
         return {"is_cnr": False, "confidence": 0.0,
@@ -68,7 +69,9 @@ def classify_with_qwen(image_path: str, model: str = CLASSIFY_MODEL) -> dict:
     tmp_created = img_path != image_path
 
     try:
-        response = ollama.chat(
+        _ollama_host = _os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+        _client = ollama.Client(host=_ollama_host)
+        response = _client.chat(
             model=model,
             messages=[{
                 "role": "user",

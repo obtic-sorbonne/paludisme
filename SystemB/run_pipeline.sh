@@ -24,9 +24,12 @@ set -euo pipefail
 
 # ── Paths (change these if your layout changes) ────────────────────────────────
 WORK_DIR="$HOME/digitize_medical_records"
+# Ollama host — override with your port if using a personal Ollama instance
+# e.g. export OLLAMA_HOST=http://127.0.0.1:11435 in your .bashrc
+OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 PYTHON="$WORK_DIR/labelimg_env/bin/python"
 PROCESS_PATIENT="$WORK_DIR/SystemB_page_classification/process_patient.py"
-EXTRACT_VARS="$WORK_DIR/VariableExtraction/extract_variables.py"
+EXTRACT_VARS="$WORK_DIR/SystemB/VariableExtraction/extract_variables_qwen.py"
 VAR_CONFIG="$WORK_DIR/VariableExtraction/variable_extraction_config.yaml"
 VAR_OUTPUT="$WORK_DIR/VariableExtraction/outputs"
 FINAL_ANON="$WORK_DIR/outputs/final_anonymized"
@@ -178,7 +181,8 @@ if [[ "$SKIP_VARIABLES" == false ]]; then
     mkdir -p "$VAR_OUTPUT"
     if "$PYTHON" "$EXTRACT_VARS" \
         --all \
-        --config "$VAR_CONFIG" \
+        --host "$OLLAMA_HOST" \
+        --model qwen3:30b \
         --output-dir "$VAR_OUTPUT"; then
         ok "All patients written to research_table.xlsx + research_database.db"
     else
