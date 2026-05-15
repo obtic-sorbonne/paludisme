@@ -594,6 +594,20 @@ def extract_row(patient_id: str, parsed: dict, groups: dict,
     j30_text = groups["J30"]["text"]
 
     row["Date_PEC_J0"]  = groups["J0"]["date"]
+
+    # FC_J0 fallback: regex from J0 text when Qwen misses it in narrative
+    if not row.get("Fréquence_Cardiaque_J0"):
+        fc_patterns = [
+            r"fc\s*[:\s]\s*(\d{2,3})\s*/?\s*(?:min|mn|bpm)",
+            r"auscultation\s+cardiaque[^.]*fc\s+(\d{2,3})",
+            r"pouls\s*[:\s]\s*(\d{2,3})\s*/?\s*(?:min|mn|bpm)",
+            r"fr[e\xe9]quence\s+cardiaque\s*[:\s]\s*(\d{2,3})",
+        ]
+        for pat in fc_patterns:
+            m = re.search(pat, j0_text, re.IGNORECASE)
+            if m:
+                row["Fréquence_Cardiaque_J0"] = m.group(1)
+                break
     row["Date_PEC_J3"]  = groups["J3"]["date"]
     row["Date_PEC_J30"] = groups["J30"]["date"]
 
