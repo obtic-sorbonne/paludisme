@@ -47,7 +47,6 @@ This pipeline uses 5 AI models, all running locally via Ollama.
 > The full qwen2.5vl:72b uses 37 GB of VRAM. qwen72b-limited is a custom Ollama model built from it with `num_gpu 20`, reducing VRAM to 22 GB with only −1.6 percentage points accuracy loss. This frees ~15 GB for other researchers on shared GPU servers.
 
 ---
-```bash
 ```
 
 ## Installation
