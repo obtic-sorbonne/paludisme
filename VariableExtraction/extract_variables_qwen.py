@@ -207,12 +207,16 @@ def parse_anonymized_file(path: Path) -> dict:
 # Step 2 — Assign timepoints J0/J3/J30
 # ─────────────────────────────────────────────────────────────────────────────
 _DATE_PATS = [
-    r"Date\s*:\s*(\d{2}/\d{2}/\d{4})",
+    r"Date\s*:\s*(\d{1,2}/\d{2}/\d{2,4})",
     r"Date\s*/\s*Heure\s+(\d{2}/\d{2}/\d{4})",
-    r"Prélèvement\s+prévu\s+le[^:]*:\s*(\d{2}/\d{2}/\d{2})",
-    r"Prélèvement\s*:\s*(\d{2}/\d{2}/\d{4})",
-    r"Entrée Urgence le\s*(\d{2}/\d{2}/\d{4})",
-    r"PARAMETRES A L[''']ARRIVEE\s*:\s*(\d{2}/\d{2}/\d{4})",
+    r"Pr.l.vement\s+pr.vu\s+le[^:]*:\s*(\d{2}/\d{2}/\d{2,4})",
+    r"Pr.l.vement\s*:\s*(\d{2}/\d{2}/\d{4})",
+    r"Entr.e Urgence le\s*(\d{2}/\d{2}/\d{4})",
+    r"PARAMETRES A L.ARRIVEE\s*:\s*(\d{2}/\d{2}/\d{4})",
+    r"COMPTE RENDU DE CONSULTATION DU\s+(\d{2}/\d{2}/\d{2,4})",
+    r"COMPTE RENDU DE SEJOUR.*?DU\s+(\d{2}/\d{2}/\d{2,4})\s+AU",
+    r"Date\s*:\s*(\d{2}\.\d{2}\.\d{4})",
+    r"Date\s+Heure\s+(\d{2}/\d{2}/\d{4})",
 ]
 _IGNORE_CTX = ["naissance", "naiss", "depart", "retour", "premiers", "derniere", "premiere"]
 
@@ -229,11 +233,41 @@ def page_date(text: str) -> str:
     return ""
 
 
+def _has_explicit_j3_label(pages: list) -> bool:
+    """Check if any page is explicitly labeled as J3/J4 follow-up."""
+    j3_patterns = [
+        r"contr[oô]le\s*j\s*[34]",
+        r"suivi\s*j\s*[34]",
+        r"j\s*[34]\s*(?:de|du|pour|palu|paludisme|contr[oô]le)",
+        r"\bj\s*[34]\s*(?:frottis|parasit|nfs|bilan)",
+        r"revient\s*[\xe0a]\s*j\s*[34]",
+        r"retour\s*[\xe0a]\s*j\s*[34]",
+    ]
+    for _, pg in pages:
+        text_lower = pg["text"].lower()
+        for pat in j3_patterns:
+            if re.search(pat, text_lower):
+                return True
+    return False
+
+
+def _lab_density(pages: list) -> int:
+    """Count lab values in pages for data density scoring."""
+    text = " ".join(pg["text"] for _, pg in pages)
+    return len(re.findall(
+        r'\b\d+[,.]?\d*\s*(?:g/dl|g/100|10x\d|mmol|ui/l|mg/l|%)\b',
+        text, re.IGNORECASE))
+
+
 def assign_timepoints(parsed: dict, j0_merge_days: int = 3) -> dict:
-    """Group pages by date and assign J0/J3/J30."""
+    """Group pages by date and assign J0/J3/J30.
+
+    J3 selection rules (scientist, May 2026):
+    1. EXPLICIT LABEL: page labeled 'Controle J3', 'Suivi J3' etc → that date is J3
+    2. DATA DENSITY: pick date with most lab results in J0+2 to J0+5 window
+    """
     date_pages: dict[str, list] = {}
     undated = []
-
     for sec in parsed["sections"]:
         for pg in sec["pages"]:
             d = page_date(pg["text"])
@@ -241,15 +275,11 @@ def assign_timepoints(parsed: dict, j0_merge_days: int = 3) -> dict:
                 date_pages.setdefault(d, []).append((sec, pg))
             else:
                 undated.append((sec, pg))
-
     sorted_dates = sorted(date_pages.keys(),
                           key=lambda d: parse_date(d) or datetime.min)
-
     groups = {"J0": [], "J3": [], "J30": []}
     dates  = {"J0": "", "J3": "", "J30": ""}
-
     n = len(sorted_dates)
-
     if n == 0:
         for sec in parsed["sections"]:
             for pg in sec["pages"]:
@@ -265,32 +295,44 @@ def assign_timepoints(parsed: dict, j0_merge_days: int = 3) -> dict:
     else:
         j0_dt = parse_date(sorted_dates[0])
         groups["J0"] = [pg["text"] for _, pg in date_pages[sorted_dates[0]]]
-        groups["J30"] = [pg["text"] for _, pg in date_pages[sorted_dates[-1]]]
         dates["J0"]  = sorted_dates[0]
-        dates["J30"] = sorted_dates[-1]
+        groups["J30"] = [pg["text"] for _, pg in date_pages[sorted_dates[-1]]]
+        dates["J30"]  = sorted_dates[-1]
 
-        for mid in sorted_dates[1:-1]:
-            mid_dt = parse_date(mid)
-            delta = abs((mid_dt - j0_dt).days) if (j0_dt and mid_dt) else 999
+        j3_explicit_date = None
+        j3_window_dates = []
+
+        for d in sorted_dates[1:-1]:
+            d_dt = parse_date(d)
+            delta = abs((d_dt - j0_dt).days) if (j0_dt and d_dt) else 999
             if delta <= j0_merge_days:
-                groups["J0"].extend(pg["text"] for _, pg in date_pages[mid])
+                groups["J0"].extend(pg["text"] for _, pg in date_pages[d])
             else:
-                groups["J3"].extend(pg["text"] for _, pg in date_pages[mid])
-                if not dates["J3"]:
-                    dates["J3"] = mid
+                if j3_explicit_date is None and _has_explicit_j3_label(date_pages[d]):
+                    j3_explicit_date = d
+                if 2 <= delta <= 5:
+                    j3_window_dates.append(d)
+                groups["J3"].extend(pg["text"] for _, pg in date_pages[d])
 
-    # Add undated pages to J0
+        if j3_explicit_date:
+            dates["J3"] = j3_explicit_date
+        elif j3_window_dates:
+            best = max(j3_window_dates, key=lambda d: _lab_density(date_pages[d]))
+            dates["J3"] = best
+        elif sorted_dates[1:-1]:
+            for d in sorted_dates[1:-1]:
+                d_dt = parse_date(d)
+                delta = abs((d_dt - j0_dt).days) if (j0_dt and d_dt) else 999
+                if delta > j0_merge_days:
+                    dates["J3"] = d
+                    break
+
     for _, pg in undated:
         groups["J0"].append(pg["text"])
-
     return {
-        tp: {
-            "text": "\n".join(groups[tp]),
-            "date": dates[tp]
-        }
+        tp: {"text": "\n".join(groups[tp]), "date": dates[tp]}
         for tp in ["J0", "J3", "J30"]
     }
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 3 — Qwen Q&A extraction
@@ -315,7 +357,7 @@ def call_qwen(client: ollama.Client, model: str, prompt: str,
                 options={
                     "temperature": 0,
                     "top_p": 1.0,
-                    "num_predict": 4096,
+                    "num_predict": 8192,
                 }
             )
             return response["message"]["content"].strip()
@@ -670,6 +712,37 @@ def extract_row(patient_id: str, parsed: dict, groups: dict,
     # Durée traitement from CNR
     if not row["Durée_traitement"]:
         row["Durée_traitement"] = get_cnr(all_cnr, "Durée en jours")
+
+    # HRP2 from CNR — overrides Qwen (result split across pages causes misses)
+    if not row["HRP2_J0"]:
+        for sec in all_cnr:
+            hrp2_raw = (sec["cnr_fields"].get("Bandelettes résultat", "") or
+                        sec["cnr_fields"].get("Bandelettes resultat", "") or
+                        sec["cnr_fields"].get("Bandelettes (HRP2, LDH, ...)", ""))
+            if hrp2_raw:
+                hrp2_norm = norm(hrp2_raw)
+                if "positif" in hrp2_norm or "positive" in hrp2_norm:
+                    row["HRP2_J0"] = "Oui"
+                elif "negatif" in hrp2_norm or "negative" in hrp2_norm:
+                    row["HRP2_J0"] = "Non"
+                if row["HRP2_J0"]:
+                    break
+
+    # Température_J3 from CNR — only available when no J3 clinical visit
+    if not row.get("Température_J3"):
+        for sec in all_cnr:
+            t = sec["cnr_fields"].get("J3 ou J4 Température", "")
+            if t:
+                row["Température_J3"] = t.strip()
+                break
+
+    # Frottis_sanguin_J3 from CNR when empty
+    if not row.get("Frottis_sanguin_J3"):
+        for sec in all_cnr:
+            p = norm(sec["cnr_fields"].get("J3 ou J4 Parasitologie", ""))
+            if p:
+                row["Frottis_sanguin_J3"] = "Non" if "absence" in p else "Oui"
+                break
 
     # Goutte épaisse from CNR (bypasses NSP filter)
     for sec in all_cnr:

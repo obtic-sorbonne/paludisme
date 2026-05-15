@@ -28,8 +28,8 @@ Sexe:
 Age:
   section: demographics
   type: numeric
-  question: "What is the patient's age in years at the time of consultation?"
-  hint: "Look for Age: Xa or enfant de X ans"
+  question: "What is the patient's age in YEARS as a decimal number? If age is given in months (e.g. '10 mois', '22m', '10m'), convert to years by dividing by 12 and rounding to 2 decimal places (e.g. 10 months = 0.83, 22 months = 1.83). If age is given in years with half (e.g. '5 ans et demi', '5 ans 1/2'), return as decimal (e.g. 5.5). Return number only."
+  hint: "Look for Age: Xa, Age: Xm, enfant de X ans, X mois, X ans et demi"
 
 Pays_de_naissance:
   section: demographics
@@ -63,8 +63,16 @@ Lieu_séjour:
 chimioprophylaxie:
   section: demographics
   type: text
-  question: "What antimalarial prophylaxis drug did the patient take before or during the trip? Give the exact drug name found in text. Examples: Nivaquine=Chloroquine, Paludrine=Proguanil, Nivaquine/Paludrine=Chloroquine+Proguanil, Savarine=Chloroquine+Proguanil, Lariam=Méfloquine, Malarone=Atovaquone+Proguanil. Return the standardized name: Chloroquine, Proguanil, Chloroquine+Proguanil, Méfloquine, Atovaquone+Proguanil, or Doxycycline. If no prophylaxis taken, return empty string."
-  hint: "Look for Nivaquine=Chloroquine, Lariam=Méfloquine, Savarine=Chloroquine+Proguanil, Malarone=Atovaquone+Proguanil. If patient took no prophylaxis or CNR says Non, answer empty string."
+  question: >
+    What antimalarial prophylaxis drug did the patient take before or during
+    the trip? Nivaquine=Chloroquine, Paludrine=Proguanil,
+    Nivaquine/Paludrine=Chloroquine+Proguanil, Savarine=Chloroquine+Proguanil,
+    Lariam=Mefloquine, Malarone=Atovaquone+Proguanil.
+    Return the standardized name or empty string if no prophylaxis taken.
+  hint: >
+    Look for Nivaquine=Chloroquine, Lariam=Mefloquine,
+    Savarine=Chloroquine+Proguanil, Malarone=Atovaquone+Proguanil.
+    If patient took no prophylaxis or CNR says Non, answer empty string.
 
 moustiquaire_imp:
   section: demographics
