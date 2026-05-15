@@ -394,7 +394,7 @@ def anonymize_text(text: str, patient_info: dict,
     qwen_model   = qwen_cfg.get("model", "qwen2.5vl:7b")
     import os as _os
     _ollama_base = _os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-    qwen_url     = qwen_cfg.get("url", f"{_ollama_base}/api/generate")
+    qwen_url     = f"{_ollama_base}/api/generate"
     chunk_size   = qwen_cfg.get("chunk_chars", 3000)
 
     if qwen_enabled:

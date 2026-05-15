@@ -163,7 +163,7 @@ for folder in "${PATIENT_FOLDERS[@]}"; do
         step "Step 1-5: GLM-OCR → Classify → Extract → Merge → Anonymize"
         BEFORE_TS=$(date +%s)
         sleep 1
-        if "$PYTHON" "$PROCESS_PATIENT" --folder "$folder"; then
+        if OLLAMA_HOST="$OLLAMA_HOST" "$PYTHON" "$PROCESS_PATIENT" --folder "$folder"; then
             ok "Steps 1-5 complete"
         else
             err "FAILED: $PATIENT_NAME"
