@@ -464,5 +464,5 @@ Supervisor: **Motasem Alrahabi**
 Internship: March–July 2026, Paris-Robert Debré Hospital / CNR Paludisme
 
 GitHub: https://github.com/obtic-sorbonne/paludisme
-```
+
 
