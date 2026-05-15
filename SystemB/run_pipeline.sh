@@ -34,6 +34,12 @@ VAR_CONFIG="$WORK_DIR/VariableExtraction/variable_extraction_config.yaml"
 VAR_OUTPUT="$WORK_DIR/VariableExtraction/outputs"
 FINAL_ANON="$WORK_DIR/outputs/final_anonymized"
 
+# ── Auto-setup models if not present ──────────────────────────────────────────
+SETUP_MODELS="$(dirname "$0")/setup_models.sh"
+if [[ -f "$SETUP_MODELS" ]]; then
+    bash "$SETUP_MODELS"
+fi
+
 # ── Colours ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
