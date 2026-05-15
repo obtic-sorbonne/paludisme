@@ -466,6 +466,3 @@ Internship: March–July 2026, Paris-Robert Debré Hospital / CNR Paludisme
 GitHub: https://github.com/obtic-sorbonne/paludisme
 ```
 
----
-
-Copy everything between the horizontal lines above and paste directly into the GitHub README editor.
