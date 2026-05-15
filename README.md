@@ -19,6 +19,37 @@ Fully automated pipeline: scanned PDFs → anonymized text → structured resear
 **All processing is 100% local. No patient data ever leaves your server.**
 
 ---
+Now I have the full picture. Let me write the complete updated README for SystemB with everything we've done:
+
+```bash
+cat > ~/digitize_medical_records/SystemB/README.md << 'README_EOF'
+# System B – CNR Paludisme Medical Digitization Pipeline
+
+Fully automated pipeline: scanned PDFs → anonymized text → structured research table (Excel + SQLite).
+
+**All processing is 100% local. No patient data ever leaves your server.**
+
+---
+
+## AI Models Required
+
+This pipeline uses 5 AI models, all running locally via Ollama.
+
+| Model | Size | Purpose |
+|---|---|---|
+| `glm-ocr` | 2.2 GB | OCR — extracts text from scanned PDF pages |
+| `qwen2.5vl:7b` | 6.0 GB | Page classification (CNR vs non-CNR) + anonymization NER |
+| `qwen2.5vl:72b` | 48 GB | Base model — required to build `qwen72b-limited` |
+| `qwen72b-limited` | 48 GB | CNR form extraction (custom 22 GB VRAM version) |
+| `qwen3:30b` | 18 GB | Variable extraction (Step 6) |
+
+> **Why qwen72b-limited?**
+> The full `qwen2.5vl:72b` uses 37 GB of VRAM. `qwen72b-limited` is a custom
+> Ollama model built from it with `num_gpu 20`, reducing VRAM to 22 GB with
+> only −1.6 percentage points accuracy loss. This frees ~15 GB for other
+> researchers on shared GPU servers.
+
+---
 
 ## Installation
 
@@ -35,36 +66,90 @@ cd digitize_medical_records
 ```bash
 python3 -m venv labelimg_env
 source labelimg_env/bin/activate
-pip install pyyaml openpyxl pillow requests
+pip install pyyaml openpyxl pillow requests ollama
 ```
 
-### Step 3 — Install Ollama and download AI models
+### Step 3 — Install Ollama
 
 ```bash
-# Install Ollama
 curl -fsSL https://ollama.com/install.sh | sh
-
-# Start Ollama
-ollama serve &
-sleep 5
-
-# Download the 3 required models
-ollama pull glm-ocr           # OCR model (~4 GB)
-ollama pull qwen2.5vl:7b      # Page classification + anonymization (~6 GB)
-ollama pull qwen72b-limited   # CNR form extraction (~48 GB)
 ```
 
-> **Note:** `qwen72b-limited` may need to be loaded from a local file on your server.
-> Ask your system administrator if it is not available via `ollama pull`.
+### Step 4 — Set up Ollama (standard server)
 
-### Step 4 — Verify setup
+If you have your own machine or dedicated GPU:
+
+```bash
+ollama serve &
+sleep 5
+```
+
+### Step 4 (alternative) — Shared GPU server setup
+
+If you share a GPU server with other researchers, run a personal Ollama
+instance on a different port to avoid conflicts:
+
+```bash
+# Create your own models directory (if /var/snap/ollama has permission issues)
+mkdir -p ~/ollama_models
+
+# Start personal Ollama on port 11435
+CUDA_VISIBLE_DEVICES=0 \
+OLLAMA_HOST=127.0.0.1:11435 \
+OLLAMA_MODELS=/home/YOUR_USERNAME/ollama_models \
+ollama serve > /tmp/ollama_personal.log 2>&1 &
+sleep 8
+
+# Tell the pipeline to use your personal instance
+echo 'export OLLAMA_HOST=http://127.0.0.1:11435' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Replace `YOUR_USERNAME` with your Linux username.
+
+> **Note:** The pipeline auto-starts Ollama via `setup_models.sh` but on
+> shared servers you may need to start it manually using the above command.
+
+### Step 5 — Download AI models (automatic)
+
+The pipeline downloads all required models automatically on first run.
+You can also run the setup script manually:
+
+```bash
+bash ~/digitize_medical_records/SystemB/setup_models.sh
+```
+
+This script:
+- Checks if each model is already present
+- Downloads missing models
+- Automatically creates `qwen72b-limited` from `qwen2.5vl:72b`
+
+Or download manually one by one:
+
+```bash
+# Fast models (~30 min total)
+ollama pull glm-ocr
+ollama pull qwen2.5vl:7b
+ollama pull qwen3:30b
+
+# Large model — takes several hours (48 GB)
+ollama pull qwen2.5vl:72b
+
+# Create the limited VRAM version (fast — uses existing weights)
+cat > ~/Modelfile_limited << 'EOF'
+FROM qwen2.5vl:72b
+PARAMETER num_ctx 8192
+PARAMETER num_gpu 20
+EOF
+ollama create qwen72b-limited -f ~/Modelfile_limited
+```
+
+### Step 6 — Verify all models
 
 ```bash
 ollama list
-# Should show all 3 models
-
-python --version
-# Should show Python 3.10 or higher
+# Should show all 5 models:
+# glm-ocr, qwen2.5vl:7b, qwen2.5vl:72b, qwen72b-limited, qwen3:30b
 ```
 
 ---
@@ -72,15 +157,18 @@ python --version
 ## Quick Start
 
 ```bash
-# One command does everything — auto-detects what you give it:
-bash ~/digitize_medical_records/SystemB/run_pipeline.sh "<path>"
+# Activate environment
+source ~/digitize_medical_records/labelimg_env/bin/activate
+
+# One command processes everything:
+bash ~/digitize_medical_records/SystemB/run_pipeline.sh "/path/to/patient_folder/"
 ```
 
 | What you pass | What happens |
 |---|---|
 | Path to a single `.pdf` file | Processes that one PDF |
 | Path to one patient folder | Processes all PDFs in that folder |
-| Path to a folder containing many patient folders | Processes every patient subfolder |
+| Path to a folder of many patient folders | Processes every patient subfolder |
 
 ---
 
@@ -89,39 +177,113 @@ bash ~/digitize_medical_records/SystemB/run_pipeline.sh "<path>"
 ```bash
 # ── Process one patient folder ──────────────────────────────────────────────
 bash ~/digitize_medical_records/SystemB/run_pipeline.sh \
-  "/path/to/your/patient_data/2006 RDB 0186/"
+  "/path/to/patient_data/2006 RDB 0186/"
 
 # ── Process ALL patients in a folder ────────────────────────────────────────
 bash ~/digitize_medical_records/SystemB/run_pipeline.sh \
-  "/path/to/your/patient_data/"
+  "/path/to/patient_data/"
 
 # ── Process 800 patient folders in one command ───────────────────────────────
 bash ~/digitize_medical_records/SystemB/run_pipeline.sh \
-  "/path/to/folder_with_800_patient_folders/"
-# This loops through all 800 subfolders, processes each one
-# (OCR → classify → extract → anonymize), then writes all 800 rows
-# into the same Excel and SQLite. One command for everything.
+  "/path/to/folder_with_800_patients/"
 
-# ── Re-run a patient already processed (safe — keeps same patient ID) ────────
-bash ~/digitize_medical_records/SystemB/run_pipeline.sh \
-  "/path/to/your/patient_data/2006 RDB 0186/"
-
-# ── Re-run ONLY variable extraction (e.g. after editing the config file) ─────
-python ~/digitize_medical_records/SystemB/VariableExtraction/extract_variables.py \
+# ── Re-run variable extraction only (after editing config) ───────────────────
+python ~/digitize_medical_records/SystemB/VariableExtraction/extract_variables_qwen.py \
   --all \
-  --config ~/digitize_medical_records/SystemB/VariableExtraction/variable_extraction_config.yaml \
-  --output-dir ~/digitize_medical_records/SystemB/VariableExtraction/outputs
+  --host http://127.0.0.1:11435 \
+  --model qwen3:30b
 
-# ── Run pipeline but skip Excel/SQLite output ─────────────────────────────────
+# ── Skip variable extraction (OCR + anonymize only) ──────────────────────────
 bash ~/digitize_medical_records/SystemB/run_pipeline.sh \
   "/path/to/patients/" --skip-variables
+
+# ── Skip OCR/extraction (variable extraction only) ───────────────────────────
+bash ~/digitize_medical_records/SystemB/run_pipeline.sh \
+  "/path/to/patients/" --skip-extraction
 ```
 
 ---
 
-## Preparing Your Patient Documents
+## What Happens Step by Step
 
-Organise your PDF files with **one folder per patient**:
+```
+INPUT: Patient folder (e.g. "2006 RDB 0186/")
+  └── Contains: DOC_00118.pdf, DOC_00119.pdf, DOC_00122.pdf ...
+
+STEP 1: GLM-OCR  [model: glm-ocr]
+  Each PDF page → raw text + page image.
+  Already-processed pages are skipped automatically (cached).
+  Cache is keyed by patient_id + doc_id to prevent collisions
+  when multiple patients have PDFs with identical filenames.
+
+STEP 2: Page Classification  [model: qwen2.5vl:7b]
+  Each page image → "Is this a CNR Paludisme form or a clinical document?"
+  CNR forms have radio buttons and checkboxes.
+  Clinical documents are lab results, letters, hospital reports.
+
+STEP 3: Extraction
+  ├── CNR pages    → qwen72b-limited extracts all form fields visually
+  │                  (species, dates, treatment, lab values, checkboxes...)
+  │                  Then postprocess_checker.py validates with GLM-OCR text.
+  └── Non-CNR pages → GLM-OCR text only
+                      (lab results, clinical reports, urgences letters)
+
+STEP 4: Merge
+  All document outputs merged into one file per patient.
+  → outputs/patients/RDB_0186/RDB_0186_patient_raw.txt
+
+STEP 5: Anonymization  [model: qwen2.5vl:7b for NER]
+  Patient name  → [PATIENT_001]
+  Doctor names  → [STAFF_001], [STAFF_002] ...
+  Phone, email, address, NPI, FINESS → [ANONYMIZED]
+  → outputs/final_anonymized/patient_001_anonymized.txt
+
+STEP 6: Variable Extraction  [model: qwen3:30b]
+  Runs ONCE at the end for ALL patients.
+  Assigns pages to clinical timepoints:
+    J0  = admission date (first consultation)
+    J3  = follow-up visit (see J3 selection rules below)
+    J30 = final follow-up (last date)
+  Extracts 83 clinical variables per patient.
+  → SystemB/VariableExtraction/outputs/research_table_qwen.xlsx
+  → SystemB/VariableExtraction/outputs/research_database_qwen.db
+```
+
+---
+
+## J3 Timepoint Selection Rules
+
+Validated by CNR Paludisme scientists (May 2026):
+
+1. **Explicit label priority:** If a document page is explicitly labeled
+   "Contrôle J3", "Suivi J3", or similar → that date is always used as J3,
+   even if it falls within the J0 merge window.
+
+2. **Data density fallback:** If no explicit J3 label exists, the pipeline
+   picks the date with the most complete laboratory results within the
+   J0+2 to J0+5 day window. A "J4" with full data is preferred over a
+   "J3" with empty results.
+
+3. **OCR typo handling:** "Contôle J3" (missing 'r') is correctly recognized
+   as a J3 label.
+
+---
+
+## Age Recording Rules
+
+Validated by CNR Paludisme scientists (May 2026):
+
+- Always stored as **decimal years**
+- `10 mois` → `0.83` (10 ÷ 12)
+- `22 mois` → `1.83`
+- `5 ans et ½` → `5.5`
+- `9 ans` → `9`
+
+---
+
+## Preparing Patient Documents
+
+One folder per patient, containing all their PDFs:
 
 ```
 my_patient_data/
@@ -132,67 +294,12 @@ my_patient_data/
 ├── 2006 RDB 0201/
 │   ├── DOC_00185.pdf
 │   └── DOC_00192.pdf
-└── 2006 RDB 0189/
-    └── DOC_00177.pdf
 ```
 
-The folder names can be anything — the system uses them as patient identifiers.
-The data can be located **anywhere on your server** — it does not need to be inside the `digitize_medical_records` folder.
-
----
-
-## What Happens Step by Step
-
-```
-INPUT: Patient folder (e.g. "2006 RDB 0186/")
-  └── Contains: DOC_00118.pdf, DOC_00119.pdf, DOC_00122.pdf ...
-
-STEP 1: GLM-OCR
-  Each PDF is read page by page using GLM-OCR.
-  Produces: raw text + page images.
-  Already-processed documents are skipped automatically.
-
-STEP 2: Page Classification (Qwen 7B)
-  Each page image is shown to Qwen 7B which decides:
-  "Is this a CNR Paludisme form or a clinical document?"
-
-STEP 3: Extraction
-  ├── CNR pages    → Qwen 72B extracts all form fields
-  │                  (species, dates, treatment, lab values, etc.)
-  │                  Then postprocess_checker.py validates the output.
-  └── Non-CNR pages → GLM-OCR text only
-                      (lab results, clinical reports, urgences)
-
-STEP 4: Merge
-  All document outputs merged into one file per patient.
-  Output: outputs/patients/RDB_0186/RDB_0186_patient_raw.txt
-
-STEP 5: Anonymization
-  All personal identifiers are removed:
-    - Patient name  → [PATIENT_001]
-    - Doctor names  → [STAFF_001], [STAFF_002] ...
-    - Phone, email, address, NPI, FINESS → [ANONYMIZED]
-  Uses Qwen 7B NER (local, no internet) to detect names in free text.
-  Each patient folder gets a permanent sequential ID stored in
-  outputs/patient_registry.json — re-running the same folder always
-  reuses the same ID, never creates duplicates.
-  Outputs:
-    outputs/patients/RDB_0186/RDB_0186_patient_anonymized.txt
-    outputs/patients/RDB_0186/RDB_0186_replacements.csv
-    outputs/final_anonymized/patient_001_anonymized.txt
-
-STEP 6: Variable Extraction
-  Runs ONCE at the end for ALL patients together.
-  Assigns each document/page to J0, J3, or J30:
-    - J0  = first consultation date (admission)
-    - J3  = first follow-up date more than 3 days from J0
-    - J30 = last consultation date
-    - Dates within 3 days of J0 are merged into J0
-  Extracts 130 clinical variables per patient.
-  Writes one row per patient to:
-    SystemB/VariableExtraction/outputs/research_table.xlsx
-    SystemB/VariableExtraction/outputs/research_database.db
-```
+- Folder names can be anything — used as patient identifiers
+- Data can be located anywhere on your server
+- Multiple patients can have PDFs with identical filenames — the pipeline
+  handles this correctly using `patient_id + doc_id` cache keys
 
 ---
 
@@ -201,73 +308,62 @@ STEP 6: Variable Extraction
 ```
 digitize_medical_records/
 ├── outputs/
-│   ├── patient_registry.json             ← permanent folder → ID mapping
+│   ├── patient_registry.json          ← permanent folder → ID mapping
 │   ├── patients/
-│   │   ├── RDB_0186/
-│   │   │   ├── RDB_0186_patient_raw.txt
-│   │   │   ├── RDB_0186_patient_anonymized.txt
-│   │   │   └── RDB_0186_replacements.csv
-│   │   └── RDB_XXXX/ ...
+│   │   └── RDB_0186/
+│   │       ├── RDB_0186_patient_raw.txt
+│   │       ├── RDB_0186_patient_anonymized.txt
+│   │       └── RDB_0186_replacements.csv
 │   └── final_anonymized/
 │       ├── patient_001_anonymized.txt
-│       ├── patient_002_anonymized.txt
 │       └── ...
 │
 └── SystemB/
     └── VariableExtraction/
         └── outputs/
-            ├── research_table.xlsx    ← ONE file, all patients (one row each)
-            └── research_database.db  ← ONE database, all patients
+            ├── research_table_qwen.xlsx   ← one row per patient
+            └── research_database_qwen.db ← SQLite database
 ```
 
-> **Important:** Every new patient is **appended** to the same Excel file and
-> the same SQLite database. Running on 15 patients gives 15 rows in one sheet.
-> Running again on the same patient **updates** their row — no duplicates.
+Every new patient is **appended** to the same Excel and SQLite.
+Re-running the same patient **updates** their row — no duplicates.
 
 ---
 
 ## Viewing Results
 
 ### Excel
-Download to your local machine:
 ```bash
-# Run this on your LOCAL machine terminal:
-scp username@your-server:~/digitize_medical_records/SystemB/VariableExtraction/outputs/research_table.xlsx ~/Desktop/
+# Download to your local machine:
+scp username@server:~/digitize_medical_records/SystemB/VariableExtraction/outputs/research_table_qwen.xlsx ~/Desktop/
 ```
-Then open in Excel or LibreOffice.
 
-Or view directly in VSCode using the **Excel Viewer** extension (MESCIUS/GrapeCity).
+Or view in VSCode with the **Excel Viewer** extension (MESCIUS/GrapeCity).
 
 ### SQLite
-View in VSCode using the **SQLite Viewer** extension (Florian Klampfer) — just click the `.db` file.
-
-Or query from the terminal:
 ```bash
-sqlite3 ~/digitize_medical_records/SystemB/VariableExtraction/outputs/research_database.db \
+sqlite3 ~/digitize_medical_records/SystemB/VariableExtraction/outputs/research_database_qwen.db \
   "SELECT ID_Patient, Sexe, Age, gravite_palu, hemoglobine_J0 FROM patients;"
-
-sqlite3 ~/digitize_medical_records/SystemB/VariableExtraction/outputs/research_database.db \
-  "SELECT COUNT(*) FROM patients;"
 ```
+
+Or view in VSCode with the **SQLite Viewer** extension (Florian Klampfer).
 
 ---
 
 ## Patient ID System
 
-Each patient folder is assigned a **permanent sequential ID** the first time it is processed.
-This mapping is saved in `outputs/patient_registry.json`:
+Each patient folder gets a permanent sequential ID on first processing,
+saved in `outputs/patient_registry.json`:
 
 ```json
 {
   "RDB_0186": "001",
   "RDB_0201": "002",
-  "RDB_0189": "003"
+  "RDB_0015": "003"
 }
 ```
 
-- Re-running the same folder always reuses the same ID
-- New folders get the next sequential number automatically
-- No duplicates, no manual management needed
+Re-running the same folder always reuses the same ID. No duplicates.
 
 ---
 
@@ -276,83 +372,100 @@ This mapping is saved in `outputs/patient_registry.json`:
 | Component | Network access | Data sent externally |
 |---|---|---|
 | GLM-OCR | Local Ollama only | Never |
-| Qwen 7B (classification + anonymization) | Local Ollama only | Never |
-| Qwen 72B (CNR form extraction) | Local Ollama only | Never |
-| Excel output | Local file | Never |
-| SQLite database | Local file | Never |
+| qwen2.5vl:7b (classify + anonymize) | Local Ollama only | Never |
+| qwen72b-limited (CNR extraction) | Local Ollama only | Never |
+| qwen3:30b (variable extraction) | Local Ollama only | Never |
+| Excel / SQLite output | Local file | Never |
 
-**No patient data ever leaves your server at any point.**
+**No patient data ever leaves your server.**
 
 ---
 
 ## Adapting for a New Institution
 
-Only edit **one file**: `SystemB/VariableExtraction/variable_extraction_config.yaml`
-
-Change only these 4 sections at the top of the file:
+Edit only **one file**: `SystemB/VariableExtraction/variable_extraction_config.yaml`
 
 ```yaml
 institution:
   services:
     - "YOUR WARD NAME"       # e.g. "Pediatrie", "Urgences"
 
-lieu_sejour_keywords:         # travel destination keywords → standardized names
+lieu_sejour_keywords:
   "country keyword": "Standardized Country Name"
 
-chimio_keywords:              # prophylaxis drug names
+chimio_keywords:
   "drug keyword": "Standardized Drug Name"
 
-treatment_keywords:           # treatment drug names
+treatment_keywords:
   "drug keyword": "Standardized Drug Name"
 ```
 
-Everything else — OCR, classification, anonymization, J0/J3/J30 logic,
-Excel formatting, SQLite schema — works without any changes.
+No Python code changes needed. Re-run variable extraction with `--all` after editing.
 
-> **Note on French accents:** OCR sometimes drops accents (e.g. `Symptômes` → `Symptomes`,
-> `Consuliation` instead of `Consultation`). The pipeline handles this automatically
-> using accent-normalized matching. No manual correction needed.
+> **Note on French accents:** OCR sometimes drops accents (e.g. `Symptômes` →
+> `Symptomes`). The pipeline handles this automatically using accent-normalized
+> matching.
 
 ---
 
 ## Known Limitations
 
-- `fièvre_J0` reflects whether fever was documented in the clinical notes, not necessarily the chief complaint
-- J3 date = first follow-up date more than 3 days from admission (may vary ±1 day depending on document dates)
+- `fièvre_J0` reflects whether fever was documented in clinical notes, not necessarily the chief complaint
+- J3 date selection follows the two-rule system above (explicit label → data density)
 - Variables left blank when not documented in the scanned records
-- CNR form fields take lower priority than clinical document values (configurable per field)
+- CNR form fields used as fallback when clinical document values are missing
+- On shared GPU servers with limited free VRAM, page classification and CNR extraction may fail — free GPU memory before running
 
 ---
 
 ## Troubleshooting
 
-**A patient is missing from the database:**
+**Models not downloading (permission denied):**
 ```bash
-python ~/digitize_medical_records/SystemB/VariableExtraction/extract_variables.py \
-  --all \
-  --config ~/digitize_medical_records/SystemB/VariableExtraction/variable_extraction_config.yaml \
-  --output-dir ~/digitize_medical_records/SystemB/VariableExtraction/outputs
+# Use your own models directory
+mkdir -p ~/ollama_models
+OLLAMA_MODELS=/home/YOUR_USERNAME/ollama_models ollama pull glm-ocr
 ```
 
-**Check which folder maps to which patient ID:**
+**qwen72b-limited missing after server restart:**
 ```bash
-cat ~/digitize_medical_records/outputs/patient_registry.json
+# Recreate from existing base model (fast, no re-download)
+cat > ~/Modelfile_limited << 'EOF'
+FROM qwen2.5vl:72b
+PARAMETER num_ctx 8192
+PARAMETER num_gpu 20
+EOF
+ollama create qwen72b-limited -f ~/Modelfile_limited
 ```
 
-**Pipeline fails on a patient — check what was extracted:**
-```bash
-cat ~/digitize_medical_records/outputs/patients/RDB_XXXX/RDB_XXXX_patient_raw.txt | head -50
-```
+**Page classification fails (model failed to load):**
+GPU memory is full. Check with `nvidia-smi`. Free memory or wait for
+other processes to finish.
 
-**Variable extraction misses a value:**
-Edit `SystemB/VariableExtraction/variable_extraction_config.yaml` under `fields:`.
-No Python code changes needed. Then re-run variable extraction with `--all`.
+**Patient missing from database:**
+```bash
+python ~/digitize_medical_records/SystemB/VariableExtraction/extract_variables_qwen.py \
+  --all --host http://127.0.0.1:11435 --model qwen3:30b
+```
 
 **Ollama not running:**
 ```bash
+source ~/start_extraction.sh
+# or manually:
 ollama serve &
-sleep 3
+sleep 5
 ollama list
+```
+
+**Shared server — Ollama using wrong port:**
+```bash
+export OLLAMA_HOST=http://127.0.0.1:11435
+# Add to ~/.bashrc to make permanent
+```
+
+**Check patient ID mapping:**
+```bash
+cat ~/digitize_medical_records/outputs/patient_registry.json
 ```
 
 ---
@@ -361,13 +474,18 @@ ollama list
 
 ```
 paludisme/
-├── SystemA/                          ← System A (previous pipeline)
-├── SystemB/                          ← System B (this pipeline)
-│   ├── run_pipeline.sh               ← MAIN ENTRY POINT
-│   ├── Anonymization_systemB/        ← anonymization module
-│   ├── CNR_forms/                    ← OCR + CNR extraction scripts
-│   ├── SystemB_page_classification/  ← page classifier + orchestrator
-│   └── VariableExtraction/           ← 130-variable extractor + config
+├── SystemA/                           ← First generation pipeline
+├── SystemB/                           ← This pipeline (main)
+│   ├── README.md                      ← This file
+│   ├── run_pipeline.sh                ← MAIN ENTRY POINT
+│   ├── setup_models.sh                ← Auto-download AI models
+│   ├── Anonymization_systemB/         ← Anonymization module
+│   ├── CNR_forms/                     ← GLM-OCR + CNR extraction
+│   ├── SystemB_page_classification/   ← Page classifier + orchestrator
+│   └── VariableExtraction/            ← 83-variable extractor + config
+│       ├── extract_variables_qwen.py  ← Main extraction script
+│       ├── extraction_fields.yaml     ← Q&A field definitions (edit to add variables)
+│       └── variable_extraction_config.yaml ← Institution config
 ├── .gitignore
 └── requirements.txt
 ```
@@ -377,5 +495,11 @@ paludisme/
 ## Contact & Support
 
 Developed by **Labiba FAROOQ** at **ObTIC, Sorbonne Université**.
+Supervisor: **Motasem Alrahabi**
+Internship: March–July 2026, Paris-Robert Debré Hospital
 
 GitHub: https://github.com/obtic-sorbonne/paludisme
+README_EOF
+
+echo "✅ README written ($(wc -l < ~/digitize_medical_records/SystemB/README.md) lines)"
+```
